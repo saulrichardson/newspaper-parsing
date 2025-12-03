@@ -70,6 +70,7 @@ async def transcribe_pages(
             page_img = Image.open(png_path).convert("RGB")
             box_results: list[BoxResult] = []
             started_at = datetime.now(timezone.utc).isoformat()
+            page_id = png_path.stem
 
             async def _one_box(b: BBox) -> None:
                 prompt = build_prompt(b.cls)
@@ -80,7 +81,7 @@ async def transcribe_pages(
                     async with sem:
                         msg = build_user_message(
                             prompt + ' Respond ONLY with JSON: {"status":"ok"|"unreadable","transcript":string}. If unreadable, set transcript to "".',
-                            image_bytes=[_maybe_save_crop(page_img, b, crops_dir)],
+                            image_bytes=[_maybe_save_crop(page_img, b, crops_dir, page_id)],
                         )
                         resp = await client.complete_response(model=model, input_messages=[msg])
                     elapsed_ms = (time.perf_counter() - start) * 1000.0
@@ -119,7 +120,6 @@ async def transcribe_pages(
 
             await asyncio.gather(*(_one_box(b) for b in boxes))
             finished_at = datetime.now(timezone.utc).isoformat()
-            page_id = png_path.stem
             page_res = PageResult.model_validate(
                 {
                     "page_id": page_id,
@@ -147,11 +147,11 @@ def _crop_to_png_bytes(img: Image.Image, xyxy: Sequence[int]) -> bytes:
     return buf.getvalue()
 
 
-def _maybe_save_crop(img: Image.Image, bbox: BBox, crops_dir: Path | None) -> bytes:
+def _maybe_save_crop(img: Image.Image, bbox: BBox, crops_dir: Path | None, page_id: str) -> bytes:
     data = _crop_to_png_bytes(img, bbox.xyxy)
     if crops_dir:
         crops_dir.mkdir(parents=True, exist_ok=True)
-        fname = f"{bbox.id}_{bbox.cls}.png"
+        fname = f"{page_id}_{bbox.id}_{bbox.cls}.png"
         (crops_dir / fname).write_bytes(data)
     return data
 
