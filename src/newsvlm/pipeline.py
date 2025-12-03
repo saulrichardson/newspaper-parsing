@@ -88,6 +88,10 @@ async def transcribe_pages(
                         parsed = _coerce_json(resp["text"])
                         status = parsed.get("status")
                         transcript = parsed.get("transcript")
+                        # Normalize empty transcript: if model says ok but gave empty, treat as unreadable.
+                        if status == "ok" and (transcript is None or not str(transcript).strip()):
+                            status = "unreadable"
+                            transcript = ""
                         if status not in {"ok", "unreadable"}:
                             raise ValueError("status must be ok or unreadable")
                         box_res = BoxResult.model_validate(
@@ -153,7 +157,7 @@ def _maybe_save_crop(img: Image.Image, bbox: BBox, crops_dir: Path | None) -> by
 
 
 def _coerce_json(text: str) -> dict:
-    """Accept raw JSON or JSON wrapped in ```json fences."""
+    """Accept raw JSON or JSON wrapped in ```json fences, scrub control chars."""
 
     if text is None:
         raise ValueError("empty response text")
@@ -168,10 +172,18 @@ def _coerce_json(text: str) -> dict:
             lines = lines[:-1]
         stripped = "\n".join(lines).strip()
     try:
+        # First pass parse
         return json.loads(stripped)
     except json.JSONDecodeError as exc:
-        # Some providers return raw newlines in strings; try escaping them and retry.
-        if "Invalid control character" in str(exc):
-            escaped = stripped.replace("\n", "\\n")
-            return json.loads(escaped)
+        # Scrub ASCII control characters (except tab/newline/carriage return) then retry.
+        import re
+
+        cleaned = re.sub(r"[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f]", " ", stripped)
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            # Some providers return raw newlines in strings; try escaping them and retry.
+            if "Invalid control character" in str(exc):
+                escaped = cleaned.replace("\n", "\\n")
+                return json.loads(escaped)
         raise

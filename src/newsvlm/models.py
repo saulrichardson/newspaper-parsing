@@ -80,6 +80,7 @@ class BoxResult(BaseModel):
     def _transcript_rules(cls, v: str | None, info):
         status = info.data.get("status")
         if status == "ok":
+            # Pipeline already coerces empty -> unreadable; keep defensive guard
             if not v or not isinstance(v, str) or not v.strip():
                 raise ValueError("ok status requires non-empty transcript")
         if status == "unreadable":
