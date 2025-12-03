@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+*.sqlite
+.env
+.venv/
+venv/
+.envrc
+
+# Outputs
+/tmp/
+tmp_preview/
+vlm_out*/
+crops*/
+comp_* 
+
+# VSCode
+.vscode/
+.idea/
+
+# macOS
+.DS_Store

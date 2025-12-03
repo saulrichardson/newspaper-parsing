@@ -1,0 +1,4 @@
+-e agent-gateway
+Pillow
+tqdm
+pydantic>=2.0
