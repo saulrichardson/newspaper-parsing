@@ -1,0 +1,32 @@
+You will receive the OCR-extracted TEXT of a newspaper page. Pages often mix unrelated snippets (ads, sports, obits, classifieds).
+Your job is presence-first: scan the entire text for ANY zoning-related item. Ignore visual prominence or length.
+Treat “zoning” references as valid ONLY if the text contains the actual operative code (legal clauses, sections, effective language) that is being enacted or amended. Headlines, brief mentions, or articles saying “city considering…” without printing the law do NOT count.
+If any qualifying zoning law text is present, assign ONE primary label using the priority below; also report which categories are present.
+If none are present, return "unrelated".
+
+Labels (choose exactly one primary):
+- full_ordinance — presents codified zoning law (or a substantial excerpt) as standing text taking effect (sections/articles, penalty tables, district definitions). Look for declarative clauses, numbered sections, “Section 1. Be it ordained…”. Mentions alone are insufficient.
+- amendment_substantial — a change to existing law that supplies long replacement text (e.g., whole sections/articles printed as the new version) and clearly states the amended text that will be enforced.
+- amendment_targeted — a focused change (limited clauses, specific parcels/rezones, narrow edits) that still prints the actual text being amended or the precise rezoning order taking effect.
+- public_hearing — an announcement of an upcoming official meeting/hearing about zoning (schedule/location/participation details).
+- unrelated — no zoning ordinance/amendment/hearing content anywhere in the text.
+
+Decision approach (high level, not rules):
+- Purpose-first reading: Is the content presenting enforceable law text, changing it (replacement-scale vs targeted), inviting to a meeting, or something else?
+- Treat headings like “ARTICLE”/“SECTION” as legal code structure. Require snippets that read like ordinances (ordinance numbers, legal phrasing, adoption language). Articles merely describing votes without printing the ordinance belong in “unrelated”.
+- When multiple zoning-related types appear anywhere in the text, ignore prominence and select the primary label by this priority of legal operativeness:
+  amendment_substantial > amendment_targeted > full_ordinance > public_hearing.
+- If text is partially legible but shows stable legal structure, prefer a zoning category with lower confidence over “unrelated”. If you cannot find any operative ordinance language, answer “unrelated”.
+
+Output JSON only:
+{
+  "label": "full_ordinance | amendment_substantial | amendment_targeted | public_hearing | unrelated",
+  "confidence": 0.0-1.0,
+  "present": {
+    "full_ordinance": true/false,
+    "amendment_substantial": true/false,
+    "amendment_targeted": true/false,
+    "public_hearing": true/false
+  },
+  "rationale": "1–2 sentences explaining the purpose-based reasoning you used."
+}

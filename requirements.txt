@@ -2,3 +2,8 @@
 Pillow
 tqdm
 pydantic>=2.0
+openpyxl
+pandas
+scikit-learn
+pyarrow
+matplotlib

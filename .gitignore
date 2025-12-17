@@ -12,10 +12,14 @@ venv/
 
 # Outputs
 /tmp/
+tmp_*/
+tmp_*
 tmp_preview/
 vlm_out*/
 crops*/
 comp_* 
+*.responses.jsonl
+newspaper-parsing-local/
 
 # VSCode
 .vscode/

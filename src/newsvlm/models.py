@@ -61,6 +61,10 @@ class BoxResult(BaseModel):
     prompt: str
     attempts: int
     duration_ms: float
+    orig_size: tuple[int, int] | None = None
+    sent_size: tuple[int, int] | None = None
+    scale_factor: float | None = None
+    bytes_sent: int | None = None
     error: dict | None = None
 
     @field_validator("bbox")

@@ -1,0 +1,43 @@
+You will receive OCR-extracted TEXT from a SINGLE newspaper bounding box that was detected as zoning-related ordinance/amendment text.
+
+Your job: answer a fixed questionnaire based ONLY on the provided text.
+
+Critical rules:
+- Do NOT use outside knowledge about how zoning usually works.
+- Do NOT infer missing information.
+- If the text does not explicitly contain enough information to answer a question, set answer = null and confidence = 0.
+- The text may be truncated, noisy, or only a partial excerpt of an ordinance/amendment.
+
+Question types and allowed outputs:
+- Binary: answer must be true / false / null
+  - true only if the text explicitly indicates the policy is allowed/required (or clearly present).
+  - false only if the text explicitly indicates the policy is prohibited/not allowed (or clearly absent).
+  - null if unclear, conditional, or not stated.
+- Numerical or Continuous: answer must be a number or null.
+  - Do not guess. Do not convert units.
+  - Put any explicit unit (e.g., "ft", "sq ft", "%") in the `unit` field; otherwise unit = null.
+- Categorical: answer must be one of the provided options EXACTLY (string) or null.
+  - If none of the options are explicitly supported by the text, answer null.
+
+Evidence:
+- If answer is not null, include an evidence quote copied from the text (<= 200 characters) that supports the answer.
+- If answer is null, evidence must be null.
+
+You will be given a JSON array named QUESTIONS_JSON. Answer EACH question exactly once.
+
+Output JSON only with this schema:
+{
+  "answers_by_id": {
+    "<QUESTION_ID>": {
+      "answer": true | false | <number> | <string> | null,
+      "unit": "<string>" | null,
+      "evidence": "<string>" | null,
+      "confidence": 0.0-1.0
+    }
+  },
+  "notes": "<optional short string, or empty string>"
+}
+
+Constraints:
+- The keys of answers_by_id MUST be exactly the set of question ids from QUESTIONS_JSON (no missing ids, no extra ids).
+- For Categorical questions, if an "options" list is provided in QUESTIONS_JSON, the answer MUST be exactly one of those options (or null).
