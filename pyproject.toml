@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "newsbag"
+version = "0.1.0"
+description = "GPU-first newspaper layout bagging pipeline: Paddle(4)+VL1.5, Dell, MinerU"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  {name = "Saul Richardson + Codex"}
+]
+dependencies = [
+  "numpy>=1.26",
+  "Pillow>=10.0",
+]
+
+[project.optional-dependencies]
+paddle = [
+  "paddleocr>=3.4.0"
+]
+dell = [
+  "onnxruntime-gpu>=1.20",
+  "opencv-python-headless>=4.9",
+  "torch>=2.2"
+]
+mineru = [
+  "torch>=2.2",
+  "transformers>=4.45",
+  "accelerate>=0.34",
+  # Not on PyPI as of Feb 2026; install from the upstream release tag.
+  "mineru_vl_utils @ git+https://github.com/opendatalab/mineru-vl-utils.git@mineru_vl_utils-0.1.22-released"
+]
+dev = [
+  "pytest>=8.0"
+]
+
+[project.scripts]
+newsbag = "newsbag.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

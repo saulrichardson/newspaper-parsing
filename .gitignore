@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+
+# Build
+build/
+dist/
+*.egg-info/
+
+# Runtime outputs
+runs/
+logs/
+outputs/
+reports/
+review/
+
+# Local archives/references
+_archive/
+_reference/
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/

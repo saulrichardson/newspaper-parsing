@@ -1,0 +1,67 @@
+{
+  "manifest_path": "/scratch/$USER/paddleocr_vl15/input/news_manifest.txt",
+  "run_root": "/scratch/$USER/paddleocr_vl15/runs",
+  "run_name": "layout_bagging",
+  "paddleocr_bin": "/scratch/$USER/paddleocr_vl15/envs/paddleocr_gpu_py312/bin/paddleocr",
+  "device_order": [
+    "gpu:0",
+    "cpu"
+  ],
+  "cpu_threads": 8,
+  "resume": true,
+  "allow_gpu_to_cpu_fallback": true,
+  "paddle_layout_variants": [
+    {
+      "variant_id": "pld_v2_thr03",
+      "model_name": "PP-DocLayoutV2",
+      "threshold": 0.3,
+      "timeout_sec": 2700
+    },
+    {
+      "variant_id": "pld_v3_thr03",
+      "model_name": "PP-DocLayoutV3",
+      "threshold": 0.3,
+      "timeout_sec": 2700
+    },
+    {
+      "variant_id": "pld_plusL_thr03",
+      "model_name": "PP-DocLayout_plus-L",
+      "threshold": 0.3,
+      "timeout_sec": 2700
+    }
+  ],
+  "paddle_vl15": {
+    "enabled": true,
+    "variant_id": "pvl15_docparser_v15",
+    "timeout_sec": 3600,
+    "layout_model": "PP-DocLayoutV3",
+    "layout_threshold": 0.3
+  },
+  "dell": {
+    "enabled": true,
+    "variant_id": "dell_c0005_i010",
+    "python_bin": "/scratch/$USER/paddleocr_vl15/envs/doclayout_l40s/bin/python",
+    "script_path": "src/newsbag/runners/run_dell_layout_only.py",
+    "model_path": "/scratch/$USER/paddleocr_vl15/tuning/iter8_dell_investigate_20260207_152759/models_try/american_stories_models/layout_model_new.onnx",
+    "label_map_path": "/scratch/$USER/paddleocr_vl15/tuning/iter8_dell_investigate_20260207_152759/repo/src/label_maps/label_map_layout.json",
+    "repo_src": "/scratch/$USER/paddleocr_vl15/tuning/iter8_dell_investigate_20260207_152759/repo/src",
+    "provider": "auto",
+    "conf": 0.005,
+    "iou": 0.1,
+    "imgsz": 1280,
+    "require_cuda_provider": false
+  },
+  "mineru": {
+    "enabled": true,
+    "variant_id": "mineru25",
+    "python_bin": "/scratch/$USER/paddleocr_vl15/envs/mineru25_py310/bin/python",
+    "script_path": "src/newsbag/runners/run_mineru25_layout.py",
+    "model_id": "opendatalab/MinerU2.5-2509-1.2B",
+    "max_pages": 0,
+    "require_cuda": false
+  },
+  "fusion": {
+    "line_cover_threshold": 0.5,
+    "recommended_variant": "P4_paddle_union4_plus_dell_plus_mineru"
+  }
+}
