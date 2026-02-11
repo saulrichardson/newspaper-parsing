@@ -1,38 +1,76 @@
-# Newspaper Layout Bagging Pipeline
+# newspaper-parsing
 
-This repository contains a clean, end-to-end pipeline for newspaper layout extraction and fusion on Torch.
+GPU-first newspaper layout parsing and fusion pipeline for **Paddle(4) + Dell + MinerU**.
 
-Scope is intentionally strict:
-- Paddle layout models (4 sources):
-  - `PP-DocLayoutV2`
-  - `PP-DocLayoutV3`
-  - `PP-DocLayout_plus-L`
-  - `Paddle doc_parser v1.5` layout stream (`layout_det_res`) plus semantic blocks (`parsing_res_list`)
+This repository is intentionally scoped to one production flow:
+
+- Paddle layout detectors: `PP-DocLayoutV2`, `PP-DocLayoutV3`, `PP-DocLayout_plus-L`
+- Paddle VL parser: `doc_parser v1.5` (`layout_det_res` + semantic blocks from `parsing_res_list`)
 - Dell American Stories layout parser
 - MinerU2.5 layout parser
+- Cross-model fusion with anti-noise gating and review pack generation
 
-No other layout models are part of the active code path.
+No other parser families are in the active path.
 
-## Goals
-- GPU-first execution on Torch (`--gres=gpu:*`), with explicit CPU fallback controls.
-- Preserve raw model labels and semantic payloads (especially VL1.5 table/html blocks).
-- Fuse candidate regions while suppressing noisy oversized boxes.
-- Produce organized per-page artifacts for visual review and downstream OCR.
+## Why this repo exists
+
+- Run the full parser bag from a folder of newspaper PNGs/TIFFs.
+- Keep Torch usage efficient: GPU inference first, CPU fusion/review second.
+- Preserve model provenance and labels (including VL1.5 semantic/table payloads).
+- Produce visual artifacts you can inspect quickly (`review/pages`, `top20_informative`, `top20_miner_delta`).
+
+## Visual walkthrough
+
+### 1) Raw page input
+
+![Input newspaper page](docs/images/example_input.png)
+
+### 2) Full model comparison board (Paddle4 + Dell + MinerU + fused)
+
+![Full comparison board](docs/images/example_full_board.png)
+
+### 3) Noise-control impact (before vs after fusion noise guard)
+
+![Noise control comparison](docs/images/example_noise_fix.png)
+
+### 4) MinerU contribution view (without MinerU vs with MinerU)
+
+![Miner contribution comparison](docs/images/example_miner_delta.png)
+
+## High-level pipeline
+
+```mermaid
+flowchart LR
+  A["Input folder (PNG/JPG/TIFF)"] --> B["Manifest builder"]
+  B --> C["GPU inference jobs"]
+  C --> C1["Paddle layout x3 (L40S)"]
+  C --> C2["Paddle VL1.5 doc_parser (L40S)"]
+  C --> C3["Dell + MinerU (H200 or L40S)"]
+  C1 --> D["Normalized source outputs + label stats"]
+  C2 --> D
+  C3 --> D
+  D --> E["CPU fusion + ranking"]
+  E --> F["Review bundle + top20 packs"]
+  F --> G["Ship artifacts: TSVs + PNG boards + JSON"]
+```
 
 ## Repository layout
-- `src/newsbag/`: core package (orchestration, runners, fusion, review artifacts)
-- `configs/pipeline.example.json`: example run config
-- `torch/slurm/`: Torch sbatch templates and submission helper
-- `scripts/`: local convenience wrappers
-- `docs/`: output and operations notes
 
-## Quickstart (local)
+- `src/newsbag/` core package (CLI, runners, fusion, review)
+- `configs/pipeline.example.json` local reference config
+- `configs/pipeline.torch.json` Torch reference config
+- `torch/slurm/` sbatch templates + submit helpers
+- `scripts/make_manifest.py` manifest generation utility
+- `scripts/monitor_torch_jobs.sh` queue monitor helper
+- `docs/output_layout.md` exact artifact contracts
+- `docs/torch_hpc.md` Torch operational guidance
+
+## Quick start (local)
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
-# for full model stack:
-# pip install -e .[paddle,dell,mineru]
 
 cp configs/pipeline.example.json configs/pipeline.local.json
 # edit paths in configs/pipeline.local.json
@@ -44,86 +82,83 @@ Create a manifest from a scan folder:
 
 ```bash
 python scripts/make_manifest.py \
-  --input /Users/saulrichardson/Downloads/ad-hoc-newspapers \
-  --output /Users/saulrichardson/Downloads/ad-hoc-newspapers/news_manifest.txt
+  --input /absolute/path/to/scans \
+  --output /absolute/path/to/news_manifest.txt
 ```
 
-## Torch usage
-Use the templates in `torch/slurm/` and set account/partition/GRES according to cluster policy.
+## Quick start (Torch, recommended)
 
-Critical rule for Torch GPU requests:
-- Use `--gres=gpu:<type>:1` (not `--gpus=1`)
-
-Examples:
-- `l40s_public`: `--gres=gpu:l40s:1`
-- `h200_public`: `--gres=gpu:h200:1`
-
-Preflight:
+### 0) GPU preflight
 
 ```bash
+cd /scratch/$USER/paddleocr_vl15/newspaper-parsing
 bash torch/slurm/preflight_gpu.sh
 ```
 
-Submit:
+### 1) Submit end-to-end from a folder
 
 ```bash
-# Recommended: submit a directory of scans end-to-end (manifest + config + GPU infer + CPU fuse/review)
-bash torch/slurm/submit_newsbag_from_dir.sh --input-dir /scratch/$USER/paddleocr_vl15/input/ad_hoc_newspapers_20260205_190618 --recursive --gpu l40s
+cd /scratch/$USER/paddleocr_vl15/newspaper-parsing
 
-# Recommended for heavy runs: split GPU execution (Paddle on L40S, Dell+MinerU on H200), then CPU fuse/review.
-bash torch/slurm/submit_newsbag_from_dir.sh --input-dir /scratch/$USER/paddleocr_vl15/input/stress_iter10_pages --recursive --gpu split
-
-# Alternative: two-job chain only (assumes configs/pipeline.torch.json already points at your manifest)
-bash torch/slurm/submit_newsbag_full.sh
-
-# Manual (example):
-# RUN_DIR="/scratch/$USER/paddleocr_vl15/runs/layout_bagging_$(date +%Y%m%d_%H%M%S)"
-# mkdir -p "$RUN_DIR"
-# JID="$(sbatch --parsable --export=ALL,RUN_DIR="$RUN_DIR" torch/slurm/newsbag_infer_l40s.sbatch)"
-# sbatch --dependency=afterok:$JID --export=ALL,RUN_DIR="$RUN_DIR" torch/slurm/newsbag_fuse_review_cs.sbatch
+bash torch/slurm/submit_newsbag_from_dir.sh \
+  --input-dir /scratch/$USER/paddleocr_vl15/input/your_pages \
+  --recursive \
+  --gpu split
 ```
 
-Monitor:
+What `--gpu split` does:
+
+- L40S job: `paddle_layout,paddle_vl15`
+- H200 job: `dell,mineru`
+- CPU job: `fusion,review` (after both GPU jobs succeed)
+
+This is the safest high-throughput default on Torch.
+
+### 2) Monitor
 
 ```bash
+cd /scratch/$USER/paddleocr_vl15/newspaper-parsing
 bash scripts/monitor_torch_jobs.sh
 ```
 
-### Torch note: H200 vs Paddle
-As of February 2026, Paddle stages (`layout_detection`, `doc_parser --pipeline_version v1.5`) may fail on Torch `h200_public`
-with CUDA kernel image mismatch errors. This repo treats that as an operational constraint:
+## Outputs you get per run
 
-- Use `l40s_public` for Paddle stages.
-- Use `h200_public` for Dell + MinerU (fast, stable).
-- Use `--gpu split` to run them concurrently and keep throughput high.
+Each run writes under:
 
-## Outputs
-Each run writes a timestamped run directory with:
-- `sources/`: per-model raw + normalized outputs
-- `fusion/`: fused boxes and metrics by variant
-- `review/`: per-page PNG boards for manual quality checks
-- `reports/`: leaderboard and per-page metrics TSV/JSON
+- `/scratch/$USER/paddleocr_vl15/runs/<run_name_timestamp>/`
 
-See:
-- `docs/output_layout.md` for exact file contracts.
-- `docs/torch_hpc.md` for HPC package/runtime guidance.
+Key outputs:
 
-## Licensing Notes
-This repo can be used with optional third-party model utilities that have their own licenses.
-In particular, `MinerU` support in this pipeline uses `mineru_vl_utils`, which is licensed under AGPL-3.0.
-If you plan to publish this repo or distribute binaries, confirm license compatibility with your intended use.
+- `outputs/sources/...` per-model normalized boxes and label aggregates
+- `outputs/fusion/variant_leaderboard.tsv`
+- `outputs/fusion/source_leaderboard.tsv`
+- `outputs/fusion/per_page_variant_metrics.tsv`
+- `review/pages/<slug>/06_board.png`
+- `review/top20_informative/`
+- `review/top20_miner_delta/`
 
-## Decision Logic (Compact)
+For exact schemas and filenames, see `docs/output_layout.md`.
 
-Fusion ranks variants using proxy coverage against deduped text-line candidates:
+## Fusion variants
 
-1. Build candidate sets for `S1..S3`, `P1..P4`.
-2. Apply dedupe + anti-noise rules:
-   - suppress unsupported oversized strips/boxes
-   - keep large text boxes only when cross-source support or meaningful new line coverage is present
-3. Score variants with:
-   - mean line-coverage ratio (higher is better)
-   - mean text-area ratio (higher is better)
-   - mean box count penalty (lower is better)
-4. Emit `outputs/fusion/variant_leaderboard.tsv`.
-5. Build `review/top20_informative/` using pages with strongest fused-vs-baseline signal.
+- `S1_paddle_best_single`
+- `S2_dell_only`
+- `S3_mineru_only`
+- `P1_paddle_union4`
+- `P2_paddle_union4_plus_dell`
+- `P3_paddle_union4_plus_mineru`
+- `P4_paddle_union4_plus_dell_plus_mineru`
+
+Default recommended variant in Torch config:
+
+- `P4_paddle_union4_plus_dell_plus_mineru`
+
+## Operational notes
+
+- Always request Torch GPUs via `--gres=gpu:<type>:1`.
+- Keep fusion/review off GPU partitions (CPU job only) to avoid low-util cancellation.
+- As of February 2026 on Torch, Paddle stages are most reliable on `l40s_public`; split mode handles this automatically.
+
+## Licensing note
+
+`MinerU` integration depends on `mineru_vl_utils` (AGPL-3.0). Confirm license compatibility for your deployment/distribution model.

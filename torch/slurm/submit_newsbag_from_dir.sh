@@ -73,13 +73,7 @@ if [[ -z "$INPUT_DIR" ]]; then
 fi
 
 BASE="${BASE:-/scratch/$USER/paddleocr_vl15}"
-if [ -z "${PROJECT_ROOT:-}" ]; then
-  if [ -d "$BASE/newspaper-parsing" ]; then
-    PROJECT_ROOT="$BASE/newspaper-parsing"
-  else
-    PROJECT_ROOT="$BASE/new-ocr"
-  fi
-fi
+PROJECT_ROOT="${PROJECT_ROOT:-$BASE/newspaper-parsing}"
 TEMPLATE_CONFIG_JSON="${TEMPLATE_CONFIG_JSON:-$PROJECT_ROOT/configs/pipeline.torch.json}"
 
 STAMP="$(date +%Y%m%d_%H%M%S)"

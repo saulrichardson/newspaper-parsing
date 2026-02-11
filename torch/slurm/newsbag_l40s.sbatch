@@ -12,7 +12,7 @@
 set -euo pipefail
 
 BASE="${BASE:-/scratch/$USER/paddleocr_vl15}"
-PROJECT_ROOT="${PROJECT_ROOT:-$BASE/new-ocr}"
+PROJECT_ROOT="${PROJECT_ROOT:-$BASE/newspaper-parsing}"
 VENV_DIR="${VENV_DIR:-$BASE/envs/mineru25_py310}"
 
 # Allow overriding the orchestration python (e.g., a portable conda env).

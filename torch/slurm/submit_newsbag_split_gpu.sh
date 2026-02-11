@@ -22,13 +22,7 @@
 set -euo pipefail
 
 BASE="${BASE:-/scratch/$USER/paddleocr_vl15}"
-if [ -z "${PROJECT_ROOT:-}" ]; then
-  if [ -d "$BASE/newspaper-parsing" ]; then
-    PROJECT_ROOT="$BASE/newspaper-parsing"
-  else
-    PROJECT_ROOT="$BASE/new-ocr"
-  fi
-fi
+PROJECT_ROOT="${PROJECT_ROOT:-$BASE/newspaper-parsing}"
 VENV_DIR="${VENV_DIR:-$BASE/envs/mineru25_py310}"
 CONFIG_JSON="${CONFIG_JSON:-$PROJECT_ROOT/configs/pipeline.torch.json}"
 RUN_ROOT="${RUN_ROOT:-$BASE/runs}"

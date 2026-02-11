@@ -39,7 +39,7 @@ does not need the heavy model deps because the pipeline calls model runners via 
 
 ```bash
 BASE=/scratch/$USER/paddleocr_vl15
-PROJECT_ROOT="$BASE/newspaper-parsing"  # or "$BASE/new-ocr" if you cloned into that folder
+PROJECT_ROOT="$BASE/newspaper-parsing"
 python3 -m venv $BASE/envs/newsbag
 source $BASE/envs/newsbag/bin/activate
 python -m pip install --upgrade pip
@@ -53,7 +53,7 @@ you can run the orchestration with a portable Conda env python instead:
 
 ```bash
 BASE=/scratch/$USER/paddleocr_vl15
-PROJECT_ROOT="$BASE/newspaper-parsing"  # or "$BASE/new-ocr" if you cloned into that folder
+PROJECT_ROOT="$BASE/newspaper-parsing"
 export NEWSBAG_PY="$BASE/envs/mineru25_py310/bin/python"
 $NEWSBAG_PY -m pip install -e "$PROJECT_ROOT"
 ```

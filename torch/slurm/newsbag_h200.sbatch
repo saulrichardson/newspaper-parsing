@@ -12,7 +12,7 @@
 set -euo pipefail
 
 BASE="${BASE:-/scratch/$USER/paddleocr_vl15}"
-PROJECT_ROOT="${PROJECT_ROOT:-$BASE/new-ocr}"
+PROJECT_ROOT="${PROJECT_ROOT:-$BASE/newspaper-parsing}"
 VENV_DIR="${VENV_DIR:-$BASE/envs/mineru25_py310}"
 NEWSBAG_PY="${NEWSBAG_PY:-}"
 CONFIG_JSON="${CONFIG_JSON:-$PROJECT_ROOT/configs/pipeline.torch.json}"
