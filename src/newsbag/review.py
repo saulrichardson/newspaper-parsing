@@ -42,6 +42,61 @@ def _board(images: List[Tuple[str, Path]], out_path: Path, title: str, cols: int
     canvas.save(out_path)
 
 
+def _top_informative_rows(summary: dict, rec_variant: str, top_k: int) -> List[dict]:
+    rows = []
+    for slug, page in (summary.get("pages", {}) or {}).items():
+        v = (page or {}).get("variants", {}) or {}
+        s1 = v.get("S1_paddle_best_single") or {}
+        r = v.get(rec_variant) or {}
+        s1_br = float(s1.get("base_recall_ratio") or 0.0)
+        r_br = float(r.get("base_recall_ratio") or 0.0)
+        score = (
+            3.0 * (r_br - s1_br)
+            + 2.0 * (float(r.get("text_area_ratio", 0.0)) - float(s1.get("text_area_ratio", 0.0)))
+            + 0.7 * (1.0 - s1_br)
+        )
+        rows.append(
+            {
+                "slug": slug,
+                "score": score,
+                "cov_gain": r_br - s1_br,
+                "ta_gain": float(r.get("text_area_ratio", 0.0)) - float(s1.get("text_area_ratio", 0.0)),
+            }
+        )
+    rows.sort(key=lambda x: x["score"], reverse=True)
+    return rows[: max(0, int(top_k))]
+
+
+def _top_miner_delta_rows(summary: dict, top_k: int) -> List[dict]:
+    # Compare the canonical "no MinerU" vs "with MinerU" variants.
+    v_no = "P2_paddle_union4_plus_dell"
+    v_with = "P4_paddle_union4_plus_dell_plus_mineru"
+
+    rows = []
+    for slug, page in (summary.get("pages", {}) or {}).items():
+        v = (page or {}).get("variants", {}) or {}
+        a = v.get(v_no) or {}
+        b = v.get(v_with) or {}
+        if not a or not b:
+            continue
+        a_br = float(a.get("base_recall_ratio") or 0.0)
+        b_br = float(b.get("base_recall_ratio") or 0.0)
+        a_ta = float(a.get("text_area_ratio") or 0.0)
+        b_ta = float(b.get("text_area_ratio") or 0.0)
+        score = 3.5 * (b_br - a_br) + 1.5 * (b_ta - a_ta) + 0.5 * (1.0 - a_br)
+        rows.append(
+            {
+                "slug": slug,
+                "score": score,
+                "br_gain": b_br - a_br,
+                "ta_gain": b_ta - a_ta,
+            }
+        )
+
+    rows.sort(key=lambda x: x["score"], reverse=True)
+    return rows[: max(0, int(top_k))]
+
+
 def build_review_bundle(
     images: Iterable[Path],
     run_dir: Path,
@@ -50,6 +105,9 @@ def build_review_bundle(
     dell_variant_id: str,
     mineru_variant_id: str,
     fusion_root: Path,
+    mode: str = "all",
+    top_k_informative: int = 20,
+    top_k_miner_delta: int = 20,
 ) -> Path:
     summary = read_json(fusion_root / "summary.json")
     rec = summary.get("recommended_variant")
@@ -59,8 +117,24 @@ def build_review_bundle(
     pages_root.mkdir(parents=True, exist_ok=True)
     main_png.mkdir(parents=True, exist_ok=True)
 
-    for image in images:
-        slug = image.stem
+    images_list = list(images)
+    slug_to_image = {p.stem: p for p in images_list}
+
+    if mode not in ("all", "top20"):
+        raise ValueError(f"Unknown review mode: {mode}. Expected: all|top20")
+
+    slugs_to_render = list(slug_to_image.keys())
+    if mode == "top20":
+        slugs: set[str] = set()
+        if rec:
+            slugs.update([r["slug"] for r in _top_informative_rows(summary, rec, top_k_informative)])
+        slugs.update([r["slug"] for r in _top_miner_delta_rows(summary, top_k_miner_delta)])
+        if not slugs:
+            slugs = set(slugs_to_render[: min(5, len(slugs_to_render))])
+        slugs_to_render = [s for s in slugs_to_render if s in slugs]
+
+    for slug in slugs_to_render:
+        image = slug_to_image[slug]
         page = pages_root / slug
         page.mkdir(parents=True, exist_ok=True)
 
@@ -166,40 +240,18 @@ def build_review_bundle(
             encoding="utf-8",
         )
 
-    _build_top20_pack(run_dir, fusion_root, pages_root)
-    _build_top20_miner_delta_pack(run_dir, fusion_root, pages_root)
+    _build_top20_pack(run_dir, fusion_root, pages_root, top_k=top_k_informative)
+    _build_top20_miner_delta_pack(run_dir, fusion_root, pages_root, top_k=top_k_miner_delta)
     return review_root
 
 
-def _build_top20_pack(run_dir: Path, fusion_root: Path, pages_root: Path) -> None:
+def _build_top20_pack(run_dir: Path, fusion_root: Path, pages_root: Path, top_k: int = 20) -> None:
     summary = read_json(fusion_root / "summary.json")
     rec = summary.get("recommended_variant")
     if not rec:
         return
 
-    rows = []
-    for slug, page in summary.get("pages", {}).items():
-        v = page.get("variants", {})
-        s1 = v.get("S1_paddle_best_single") or {}
-        r = v.get(rec) or {}
-        s1_br = float(s1.get("base_recall_ratio") or 0.0)
-        r_br = float(r.get("base_recall_ratio") or 0.0)
-        score = (
-            3.0 * (r_br - s1_br)
-            + 2.0 * (float(r.get("text_area_ratio", 0.0)) - float(s1.get("text_area_ratio", 0.0)))
-            + 0.7 * (1.0 - s1_br)
-        )
-        rows.append(
-            {
-                "slug": slug,
-                "score": score,
-                "cov_gain": r_br - s1_br,
-                "ta_gain": float(r.get("text_area_ratio", 0.0)) - float(s1.get("text_area_ratio", 0.0)),
-            }
-        )
-
-    rows.sort(key=lambda x: x["score"], reverse=True)
-    top = rows[:20]
+    top = _top_informative_rows(summary, rec, top_k=top_k)
 
     pack = run_dir / "review" / "top20_informative"
     pack_pages = pack / "pages"
@@ -214,7 +266,8 @@ def _build_top20_pack(run_dir: Path, fusion_root: Path, pages_root: Path) -> Non
             dst = pack_pages / f"{idx:02d}_{row['slug']}"
             if dst.exists():
                 shutil.rmtree(dst)
-            shutil.copytree(src, dst)
+            if src.exists():
+                shutil.copytree(src, dst)
 
     (pack / "README.txt").write_text(
         "\n".join(
@@ -230,36 +283,14 @@ def _build_top20_pack(run_dir: Path, fusion_root: Path, pages_root: Path) -> Non
     )
 
 
-def _build_top20_miner_delta_pack(run_dir: Path, fusion_root: Path, pages_root: Path) -> None:
+def _build_top20_miner_delta_pack(run_dir: Path, fusion_root: Path, pages_root: Path, top_k: int = 20) -> None:
     summary = read_json(fusion_root / "summary.json")
 
     # Compare the canonical "no MinerU" vs "with MinerU" variants.
     v_no = "P2_paddle_union4_plus_dell"
     v_with = "P4_paddle_union4_plus_dell_plus_mineru"
 
-    rows = []
-    for slug, page in summary.get("pages", {}).items():
-        v = page.get("variants", {})
-        a = v.get(v_no) or {}
-        b = v.get(v_with) or {}
-        if not a or not b:
-            continue
-        a_br = float(a.get("base_recall_ratio") or 0.0)
-        b_br = float(b.get("base_recall_ratio") or 0.0)
-        a_ta = float(a.get("text_area_ratio") or 0.0)
-        b_ta = float(b.get("text_area_ratio") or 0.0)
-        score = 3.5 * (b_br - a_br) + 1.5 * (b_ta - a_ta) + 0.5 * (1.0 - a_br)
-        rows.append(
-            {
-                "slug": slug,
-                "score": score,
-                "br_gain": b_br - a_br,
-                "ta_gain": b_ta - a_ta,
-            }
-        )
-
-    rows.sort(key=lambda x: x["score"], reverse=True)
-    top = rows[:20]
+    top = _top_miner_delta_rows(summary, top_k=top_k)
 
     pack = run_dir / "review" / "top20_miner_delta"
     pack_pages = pack / "pages"
@@ -274,7 +305,8 @@ def _build_top20_miner_delta_pack(run_dir: Path, fusion_root: Path, pages_root: 
             dst = pack_pages / f"{idx:02d}_{row['slug']}"
             if dst.exists():
                 shutil.rmtree(dst)
-            shutil.copytree(src, dst)
+            if src.exists():
+                shutil.copytree(src, dst)
 
     (pack / "README.txt").write_text(
         "\n".join(

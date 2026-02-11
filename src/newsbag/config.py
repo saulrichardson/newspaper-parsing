@@ -58,6 +58,15 @@ class FusionConfig:
 
 
 @dataclass
+class ReviewConfig:
+    # "all": render per-page PNG boards for every page in the manifest (can be slow on large runs).
+    # "top20": render only the pages needed for the Top-20 packs (fast; recommended on Torch).
+    mode: str = "all"
+    top_k_informative: int = 20
+    top_k_miner_delta: int = 20
+
+
+@dataclass
 class PipelineConfig:
     manifest_path: Path
     run_root: Path
@@ -73,6 +82,7 @@ class PipelineConfig:
     dell: DellConfig = field(default_factory=DellConfig)
     mineru: MinerConfig = field(default_factory=MinerConfig)
     fusion: FusionConfig = field(default_factory=FusionConfig)
+    review: ReviewConfig = field(default_factory=ReviewConfig)
 
 
 DEFAULT_PADDLE_LAYOUT_VARIANTS = [
@@ -196,6 +206,13 @@ def load_config(path: Path) -> PipelineConfig:
         recommended_variant=str(fs.get("recommended_variant", "P4_paddle_union4_plus_dell_plus_mineru")),
     )
 
+    rv = payload.get("review", {})
+    review = ReviewConfig(
+        mode=str(rv.get("mode", "all")),
+        top_k_informative=int(rv.get("top_k_informative", 20)),
+        top_k_miner_delta=int(rv.get("top_k_miner_delta", 20)),
+    )
+
     return PipelineConfig(
         manifest_path=manifest,
         run_root=run_root,
@@ -210,6 +227,7 @@ def load_config(path: Path) -> PipelineConfig:
         dell=dell,
         mineru=mineru,
         fusion=fusion,
+        review=review,
     )
 
 
@@ -265,5 +283,10 @@ def config_to_jsonable(cfg: PipelineConfig) -> Dict[str, Any]:
         "fusion": {
             "line_cover_threshold": cfg.fusion.line_cover_threshold,
             "recommended_variant": cfg.fusion.recommended_variant,
+        },
+        "review": {
+            "mode": cfg.review.mode,
+            "top_k_informative": cfg.review.top_k_informative,
+            "top_k_miner_delta": cfg.review.top_k_miner_delta,
         },
     }

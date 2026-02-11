@@ -127,6 +127,9 @@ def run_pipeline(
             dell_variant_id=cfg.dell.variant_id,
             mineru_variant_id=cfg.mineru.variant_id,
             fusion_root=fusion_root,
+            mode=cfg.review.mode,
+            top_k_informative=cfg.review.top_k_informative,
+            top_k_miner_delta=cfg.review.top_k_miner_delta,
         )
 
     latest_link = cfg.run_root.expanduser().resolve() / "latest"

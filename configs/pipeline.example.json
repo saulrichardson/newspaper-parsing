@@ -63,5 +63,10 @@
   "fusion": {
     "line_cover_threshold": 0.5,
     "recommended_variant": "P4_paddle_union4_plus_dell_plus_mineru"
+  },
+  "review": {
+    "mode": "all",
+    "top_k_informative": 20,
+    "top_k_miner_delta": 20
   }
 }
