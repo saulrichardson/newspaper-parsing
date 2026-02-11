@@ -44,6 +44,10 @@ fi
 # Auto-heal orchestration env drift on shared Torch filesystems.
 if ! "$NEWSBAG_PY" -c 'import newsbag' >/dev/null 2>&1; then
   echo "[newsbag] installing package into orchestration env: $PROJECT_ROOT"
+  if ! "$NEWSBAG_PY" -m pip --version >/dev/null 2>&1; then
+    echo "[newsbag] pip missing in orchestration env; bootstrapping with ensurepip"
+    "$NEWSBAG_PY" -m ensurepip --upgrade
+  fi
   "$NEWSBAG_PY" -m pip install -e "$PROJECT_ROOT"
 fi
 
