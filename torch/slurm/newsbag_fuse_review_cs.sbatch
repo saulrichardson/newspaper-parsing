@@ -41,6 +41,12 @@ if [ ! -x "$NEWSBAG_PY" ]; then
   exit 2
 fi
 
+# Auto-heal orchestration env drift on shared Torch filesystems.
+if ! "$NEWSBAG_PY" -c 'import newsbag' >/dev/null 2>&1; then
+  echo "[newsbag] installing package into orchestration env: $PROJECT_ROOT"
+  "$NEWSBAG_PY" -m pip install -e "$PROJECT_ROOT"
+fi
+
 echo "[newsbag] host=$(hostname) date=$(date)"
 echo "[newsbag] run_dir=$RUN_DIR"
 echo "[newsbag] stages=$STAGES"

@@ -44,6 +44,11 @@ if [ ! -x "$NEWSBAG_PY" ]; then
   exit 2
 fi
 
+if ! "$NEWSBAG_PY" -c 'import newsbag' >/dev/null 2>&1; then
+  echo "[newsbag] installing package into orchestration env: $PROJECT_ROOT"
+  "$NEWSBAG_PY" -m pip install -e "$PROJECT_ROOT"
+fi
+
 if [ -n "$RUN_DIR" ]; then
   "$NEWSBAG_PY" -m newsbag run --config "$CONFIG_JSON" --run-dir "$RUN_DIR" --stages "$STAGES"
 else
