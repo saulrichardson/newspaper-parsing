@@ -67,6 +67,21 @@ class ReviewConfig:
 
 
 @dataclass
+class TranscriptionConfig:
+    enabled: bool = True
+    # If empty, use outputs/fusion/summary.json -> recommended_variant.
+    variant: str = ""
+    labels: List[str] = field(default_factory=lambda: ["text", "title"])
+    min_overlap: float = 0.30
+    # If empty, pipeline uses top device from device_order (or cpu fallback).
+    device: str = ""
+    cpu_threads: int = 8
+    timeout_sec: int = 3600
+    max_pages: int = 0
+    resume: bool = True
+
+
+@dataclass
 class PipelineConfig:
     manifest_path: Path
     run_root: Path
@@ -83,6 +98,7 @@ class PipelineConfig:
     mineru: MinerConfig = field(default_factory=MinerConfig)
     fusion: FusionConfig = field(default_factory=FusionConfig)
     review: ReviewConfig = field(default_factory=ReviewConfig)
+    transcription: TranscriptionConfig = field(default_factory=TranscriptionConfig)
 
 
 DEFAULT_PADDLE_LAYOUT_VARIANTS = [
@@ -213,6 +229,31 @@ def load_config(path: Path) -> PipelineConfig:
         top_k_miner_delta=int(rv.get("top_k_miner_delta", 20)),
     )
 
+    tr = payload.get("transcription", {})
+    labels_raw = tr.get("labels", ["text", "title"])
+    labels: List[str]
+    if isinstance(labels_raw, list):
+        labels = [str(x).strip().lower() for x in labels_raw if str(x).strip()]
+    else:
+        labels = [
+            s.strip().lower()
+            for s in str(labels_raw).split(",")
+            if s.strip()
+        ]
+    if not labels:
+        labels = ["text", "title"]
+    transcription = TranscriptionConfig(
+        enabled=bool(tr.get("enabled", True)),
+        variant=str(tr.get("variant", "")),
+        labels=labels,
+        min_overlap=float(tr.get("min_overlap", 0.30)),
+        device=str(tr.get("device", "")),
+        cpu_threads=int(tr.get("cpu_threads", payload.get("cpu_threads", 8))),
+        timeout_sec=int(tr.get("timeout_sec", 3600)),
+        max_pages=int(tr.get("max_pages", 0)),
+        resume=bool(tr.get("resume", True)),
+    )
+
     return PipelineConfig(
         manifest_path=manifest,
         run_root=run_root,
@@ -228,6 +269,7 @@ def load_config(path: Path) -> PipelineConfig:
         mineru=mineru,
         fusion=fusion,
         review=review,
+        transcription=transcription,
     )
 
 
@@ -288,5 +330,16 @@ def config_to_jsonable(cfg: PipelineConfig) -> Dict[str, Any]:
             "mode": cfg.review.mode,
             "top_k_informative": cfg.review.top_k_informative,
             "top_k_miner_delta": cfg.review.top_k_miner_delta,
+        },
+        "transcription": {
+            "enabled": cfg.transcription.enabled,
+            "variant": cfg.transcription.variant,
+            "labels": list(cfg.transcription.labels),
+            "min_overlap": cfg.transcription.min_overlap,
+            "device": cfg.transcription.device,
+            "cpu_threads": cfg.transcription.cpu_threads,
+            "timeout_sec": cfg.transcription.timeout_sec,
+            "max_pages": cfg.transcription.max_pages,
+            "resume": cfg.transcription.resume,
         },
     }

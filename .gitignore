@@ -26,3 +26,9 @@ _reference/
 .DS_Store
 .idea/
 .vscode/
+
+# LaTeX build artifacts
+*.aux
+*.log
+*.out
+*.toc

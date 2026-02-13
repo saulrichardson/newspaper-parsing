@@ -1,0 +1,388 @@
+from __future__ import annotations
+
+import csv
+import json
+import math
+import os
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+from newsbag.utils.proc import run_cmd
+
+
+def _area(bb: List[float]) -> float:
+    return max(0.0, bb[2] - bb[0]) * max(0.0, bb[3] - bb[1])
+
+
+def _inter(a: List[float], b: List[float]) -> float:
+    x1 = max(a[0], b[0])
+    y1 = max(a[1], b[1])
+    x2 = min(a[2], b[2])
+    y2 = min(a[3], b[3])
+    if x2 <= x1 or y2 <= y1:
+        return 0.0
+    return (x2 - x1) * (y2 - y1)
+
+
+def _line_overlap_ratio(line_bb: List[float], box_bb: List[float]) -> float:
+    la = _area(line_bb)
+    if la <= 0:
+        return 0.0
+    return _inter(line_bb, box_bb) / la
+
+
+def _poly_to_bbox(poly: Any) -> Optional[List[float]]:
+    if not isinstance(poly, list) or not poly:
+        return None
+    pts: List[Tuple[float, float]] = []
+    for p in poly:
+        if not isinstance(p, list) or len(p) < 2:
+            continue
+        try:
+            x = float(p[0])
+            y = float(p[1])
+        except Exception:
+            continue
+        pts.append((x, y))
+    if not pts:
+        return None
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    bb = [min(xs), min(ys), max(xs), max(ys)]
+    if bb[2] <= bb[0] or bb[3] <= bb[1]:
+        return None
+    return bb
+
+
+def _parse_ocr_lines(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    obj = payload.get("res", payload)
+    lines: List[Dict[str, Any]] = []
+
+    def add_line(text: Any, score: Any, poly: Any, idx: int) -> None:
+        if not isinstance(text, str):
+            return
+        t = text.strip()
+        if not t:
+            return
+        bb = None
+        if isinstance(poly, list) and poly and isinstance(poly[0], list):
+            bb = _poly_to_bbox(poly)
+        elif (
+            isinstance(poly, list)
+            and len(poly) == 4
+            and all(isinstance(x, (int, float)) for x in poly)
+        ):
+            bb = [float(poly[0]), float(poly[1]), float(poly[2]), float(poly[3])]
+            if bb[2] <= bb[0] or bb[3] <= bb[1]:
+                bb = None
+        if not bb:
+            return
+        s = None
+        try:
+            if score is not None:
+                s = float(score)
+        except Exception:
+            s = None
+        lines.append({"index": idx, "text": t, "score": s, "bbox_xyxy": bb})
+
+    def parse_item(item: Any) -> None:
+        if isinstance(item, dict):
+            rec_texts = item.get("rec_texts")
+            rec_scores = item.get("rec_scores")
+            polys = item.get("dt_polys") or item.get("rec_polys") or item.get("polys")
+            if isinstance(rec_texts, list) and isinstance(polys, list):
+                n = min(len(rec_texts), len(polys))
+                for i in range(n):
+                    score = rec_scores[i] if isinstance(rec_scores, list) and i < len(rec_scores) else None
+                    add_line(rec_texts[i], score, polys[i], len(lines))
+
+            if "text" in item and any(k in item for k in ("dt_poly", "poly", "bbox", "bbox_xyxy")):
+                poly = item.get("dt_poly") or item.get("poly") or item.get("bbox_xyxy") or item.get("bbox")
+                add_line(item.get("text"), item.get("score"), poly, len(lines))
+
+            for k in ("ocr_res", "ocr_results", "ocr_res_list", "result", "results", "pages"):
+                v = item.get(k)
+                if isinstance(v, list):
+                    for x in v:
+                        parse_item(x)
+                elif isinstance(v, dict):
+                    parse_item(v)
+
+        elif isinstance(item, list):
+            for x in item:
+                parse_item(x)
+
+    parse_item(obj)
+
+    deduped: List[Dict[str, Any]] = []
+    seen = set()
+    for ln in lines:
+        bb = ln["bbox_xyxy"]
+        key = (
+            ln["text"],
+            round(bb[0] / 4),
+            round(bb[1] / 4),
+            round(bb[2] / 4),
+            round(bb[3] / 4),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(ln)
+
+    deduped.sort(key=lambda x: (x["bbox_xyxy"][1], x["bbox_xyxy"][0]))
+    for i, ln in enumerate(deduped, 1):
+        ln["reading_order"] = i
+    return deduped
+
+
+def _load_json(path: Path) -> Dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _write_json(path: Path, obj: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _normalize_fused_boxes(boxes: Iterable[Dict[str, Any]], labels: set[str]) -> List[Dict[str, Any]]:
+    out = []
+    for b in boxes:
+        try:
+            bb = [float(x) for x in (b.get("bbox_xyxy") or [])]
+        except Exception:
+            continue
+        if len(bb) != 4 or bb[2] <= bb[0] or bb[3] <= bb[1]:
+            continue
+        nl = str(b.get("norm_label") or "other")
+        if nl not in labels:
+            continue
+        out.append(
+            {
+                "norm_label": nl,
+                "bbox_xyxy": bb,
+                "reading_order": b.get("reading_order"),
+                "score": b.get("score"),
+            }
+        )
+    out.sort(
+        key=lambda x: (
+            x["reading_order"] if isinstance(x.get("reading_order"), int) else math.inf,
+            x["bbox_xyxy"][1],
+            x["bbox_xyxy"][0],
+        )
+    )
+    for i, b in enumerate(out, 1):
+        if not isinstance(b.get("reading_order"), int):
+            b["reading_order"] = i
+    return out
+
+
+def _assign_lines_to_boxes(
+    fused_boxes: List[Dict[str, Any]],
+    ocr_lines: List[Dict[str, Any]],
+    min_overlap: float,
+) -> List[Dict[str, Any]]:
+    boxes = []
+    for i, b in enumerate(fused_boxes, 1):
+        boxes.append(
+            {
+                "box_index": i,
+                "reading_order": int(b.get("reading_order") or i),
+                "norm_label": b.get("norm_label"),
+                "bbox_xyxy": b["bbox_xyxy"],
+                "lines": [],
+            }
+        )
+
+    for ln in ocr_lines:
+        best_idx = None
+        best_ov = 0.0
+        for j, b in enumerate(boxes):
+            ov = _line_overlap_ratio(ln["bbox_xyxy"], b["bbox_xyxy"])
+            if ov > best_ov:
+                best_ov = ov
+                best_idx = j
+        if best_idx is None or best_ov < min_overlap:
+            continue
+        ln2 = dict(ln)
+        ln2["overlap"] = best_ov
+        boxes[best_idx]["lines"].append(ln2)
+
+    for b in boxes:
+        b["lines"].sort(key=lambda x: (x["bbox_xyxy"][1], x["bbox_xyxy"][0]))
+        b["text"] = "\n".join(x["text"] for x in b["lines"] if x.get("text"))
+
+    boxes.sort(key=lambda x: x["reading_order"])
+    return boxes
+
+
+def run_transcription(
+    run_dir: Path,
+    paddleocr_bin: str,
+    variant: str = "",
+    labels: Optional[List[str]] = None,
+    min_overlap: float = 0.30,
+    device: str = "gpu:0",
+    cpu_threads: int = 8,
+    timeout_sec: int = 3600,
+    max_pages: int = 0,
+    resume: bool = True,
+) -> Path:
+    run_dir = run_dir.expanduser().resolve()
+    fusion_root = run_dir / "outputs" / "fusion"
+    summary_path = fusion_root / "summary.json"
+    if not summary_path.exists():
+        raise FileNotFoundError(f"Missing fusion summary: {summary_path}")
+
+    summary = _load_json(summary_path)
+    resolved_variant = str(variant).strip() or str(summary.get("recommended_variant") or "")
+    if not resolved_variant:
+        raise ValueError("Could not resolve transcription variant; set transcription.variant or fusion.recommended_variant.")
+
+    labels_list = labels or ["text", "title"]
+    labels_set = {x.strip().lower() for x in labels_list if str(x).strip()}
+    if not labels_set:
+        raise ValueError("No labels selected for transcription.")
+
+    out_root = run_dir / "outputs" / "transcription" / resolved_variant
+    out_root.mkdir(parents=True, exist_ok=True)
+    report_tsv = out_root / "transcription_report.tsv"
+
+    pages = list((summary.get("pages") or {}).items())
+    if max_pages and max_pages > 0:
+        pages = pages[: max_pages]
+
+    with report_tsv.open("w", encoding="utf-8", newline="") as f:
+        wr = csv.writer(f, delimiter="\t")
+        wr.writerow(
+            [
+                "slug",
+                "status",
+                "variant",
+                "ocr_device",
+                "fused_box_count",
+                "ocr_line_count",
+                "assigned_line_count",
+                "transcript_chars",
+                "ocr_json",
+                "transcript_json",
+                "transcript_txt",
+                "ocr_log",
+            ]
+        )
+
+        combined_lines: List[str] = []
+        for slug, pmeta in pages:
+            image_path = Path(str((pmeta or {}).get("image", ""))).expanduser()
+            fused_path = fusion_root / resolved_variant / slug / "fused_boxes.json"
+            page_dir = out_root / slug
+            page_dir.mkdir(parents=True, exist_ok=True)
+            ocr_log = page_dir / "ocr.log"
+            ocr_raw_json = page_dir / "ocr_raw.json"
+            ocr_lines_json = page_dir / "ocr_lines.json"
+            transcript_json = page_dir / "transcript_boxes.json"
+            transcript_txt = page_dir / "transcript.txt"
+
+            if not image_path.exists():
+                wr.writerow([slug, "missing_image", resolved_variant, device, 0, 0, 0, 0, "", "", "", str(ocr_log)])
+                continue
+            if not fused_path.exists():
+                wr.writerow([slug, "missing_fused", resolved_variant, device, 0, 0, 0, 0, "", "", "", str(ocr_log)])
+                continue
+
+            fused_payload = _load_json(fused_path)
+            fused_boxes = _normalize_fused_boxes(fused_payload.get("boxes") or [], labels=labels_set)
+
+            if resume and ocr_lines_json.exists() and ocr_raw_json.exists():
+                lines = (_load_json(ocr_lines_json).get("lines") or [])
+                status = "resume"
+            else:
+                ocr_out_dir = page_dir / "ocr_raw_dir"
+                ocr_out_dir.mkdir(parents=True, exist_ok=True)
+                cmd = [
+                    paddleocr_bin,
+                    "ocr",
+                    "-i",
+                    str(image_path),
+                    "--save_path",
+                    str(ocr_out_dir),
+                    "--device",
+                    str(device),
+                    "--cpu_threads",
+                    str(cpu_threads),
+                    "--enable_mkldnn",
+                    "False",
+                ]
+                res = run_cmd(
+                    cmd,
+                    ocr_log,
+                    timeout_sec=timeout_sec,
+                    env={"PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK": "True"},
+                )
+                raw_candidates = sorted(ocr_out_dir.glob("*_res.json"))
+                if res.rc != 0 or not raw_candidates:
+                    wr.writerow(
+                        [
+                            slug,
+                            f"ocr_fail({res.rc})",
+                            resolved_variant,
+                            device,
+                            len(fused_boxes),
+                            0,
+                            0,
+                            0,
+                            "",
+                            "",
+                            "",
+                            str(ocr_log),
+                        ]
+                    )
+                    continue
+                raw_payload = _load_json(raw_candidates[0])
+                _write_json(ocr_raw_json, raw_payload)
+                lines = _parse_ocr_lines(raw_payload)
+                _write_json(ocr_lines_json, {"slug": slug, "line_count": len(lines), "lines": lines})
+                status = "ok"
+
+            boxed = _assign_lines_to_boxes(fused_boxes=fused_boxes, ocr_lines=lines, min_overlap=min_overlap)
+            _write_json(
+                transcript_json,
+                {
+                    "slug": slug,
+                    "variant": resolved_variant,
+                    "labels": sorted(labels_set),
+                    "box_count": len(fused_boxes),
+                    "ocr_line_count": len(lines),
+                    "boxes": boxed,
+                },
+            )
+
+            text_blocks = [b.get("text", "").strip() for b in boxed if str(b.get("text", "")).strip()]
+            page_text = "\n\n".join(text_blocks).strip()
+            transcript_txt.write_text(page_text + ("\n" if page_text else ""), encoding="utf-8")
+
+            assigned = sum(len(b.get("lines", [])) for b in boxed)
+            wr.writerow(
+                [
+                    slug,
+                    status,
+                    resolved_variant,
+                    device,
+                    len(fused_boxes),
+                    len(lines),
+                    assigned,
+                    len(page_text),
+                    str(ocr_raw_json),
+                    str(transcript_json),
+                    str(transcript_txt),
+                    str(ocr_log),
+                ]
+            )
+
+            combined_lines.extend([f"## {slug}", page_text, ""])
+
+    combined_txt = out_root / "transcript_combined.txt"
+    combined_txt.write_text("\n".join(combined_lines).strip() + "\n", encoding="utf-8")
+    return out_root
+

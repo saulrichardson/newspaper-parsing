@@ -9,6 +9,7 @@ This repository is intentionally scoped to one production flow:
 - Dell American Stories layout parser
 - MinerU2.5 layout parser
 - Cross-model fusion with anti-noise gating and review pack generation
+- Fused-region transcription with Paddle OCR (reading-order transcript artifacts)
 
 No other parser families are in the active path.
 
@@ -18,6 +19,7 @@ No other parser families are in the active path.
 - Keep Torch usage efficient: GPU inference first, CPU fusion/review second.
 - Preserve model provenance and labels (including VL1.5 semantic/table payloads).
 - Produce visual artifacts you can inspect quickly (`review/pages`, `top20_informative`, `top20_miner_delta`).
+- Produce transcript artifacts aligned to fused regions (`outputs/transcription/...`).
 
 ## Visual walkthrough
 
@@ -50,8 +52,9 @@ flowchart LR
   C2 --> D
   C3 --> D
   D --> E["CPU fusion + ranking"]
-  E --> F["Review bundle + top20 packs"]
-  F --> G["Ship artifacts: TSVs + PNG boards + JSON"]
+  E --> F["Review bundle + top20 packs (CPU)"]
+  F --> G["GPU transcription from fused regions"]
+  G --> H["Ship artifacts: TSVs + PNG boards + JSON + TXT"]
 ```
 
 ## Repository layout
@@ -76,6 +79,13 @@ cp configs/pipeline.example.json configs/pipeline.local.json
 # edit paths in configs/pipeline.local.json
 
 newsbag run --config configs/pipeline.local.json
+```
+
+Run selected stages explicitly:
+
+```bash
+newsbag run --config configs/pipeline.local.json \
+  --stages paddle_layout,paddle_vl15,dell,mineru,fusion,review,transcription
 ```
 
 Create a manifest from a scan folder:
@@ -111,6 +121,7 @@ What `--gpu split` does:
 - L40S job: `paddle_layout,paddle_vl15`
 - H200 job: `dell,mineru`
 - CPU job: `fusion,review` (after both GPU jobs succeed)
+- L40S job: `transcription` (after fusion/review succeeds)
 
 This is the safest high-throughput default on Torch.
 
@@ -136,6 +147,9 @@ Key outputs:
 - `review/pages/<slug>/06_board.png`
 - `review/top20_informative/`
 - `review/top20_miner_delta/`
+- `outputs/transcription/<variant>/transcription_report.tsv`
+- `outputs/transcription/<variant>/<slug>/transcript.txt`
+- `outputs/transcription/<variant>/transcript_combined.txt`
 
 For exact schemas and filenames, see `docs/output_layout.md`.
 
@@ -159,6 +173,60 @@ Default recommended variant in Torch config:
 - Keep fusion/review off GPU partitions (CPU job only) to avoid low-util cancellation.
 - As of February 2026 on Torch, Paddle stages are most reliable on `l40s_public`; split mode handles this automatically.
 
+## Mini-Run Example (Abilene + Bakersfield, Feb 13, 2026)
+
+This is a real completed run on Torch with two representative pages:
+
+- Run root: `/scratch/$USER/paddleocr_vl15/runs/layout_bagging_20260213_024626`
+- Local synced artifacts:
+  - `/Users/saulrichardson/Downloads/ad-hoc-newspapers/newspaper-parsing-mini-run-20260213-024626`
+
+Submission command used:
+
+```bash
+cd /scratch/$USER/paddleocr_vl15/newspaper-parsing
+bash torch/slurm/submit_newsbag_from_dir.sh \
+  --input-dir /scratch/$USER/paddleocr_vl15/input/ad_hoc_newspapers_20260205_190618 \
+  --gpu l40s \
+  --max-pages 2
+```
+
+### Visuals from that run
+
+![Abilene input](docs/images/mini_run/abilene_input.png)
+
+![Abilene full board](docs/images/mini_run/abilene_board.png)
+
+![Bakersfield full board](docs/images/mini_run/bakersfield_board.png)
+
+![Bakersfield with vs without MinerU](docs/images/mini_run/bakersfield_miner_delta.png)
+
+### Actual output metrics (from `variant_leaderboard.tsv`)
+
+| Variant | Mean Base Recall | Mean Text Area | Mean Boxes |
+|---|---:|---:|---:|
+| `S1_paddle_best_single` | 0.979841 | 0.698220 | 224.5 |
+| `P1_paddle_union4` | 0.988996 | 0.704479 | 305.5 |
+| `P4_paddle_union4_plus_dell_plus_mineru` | 0.989998 | 0.707744 | 382.0 |
+
+### Actual transcription outputs
+
+- `outputs/transcription/P4_paddle_union4_plus_dell_plus_mineru/transcription_report.tsv`
+- `outputs/transcription/P4_paddle_union4_plus_dell_plus_mineru/transcript_combined.txt`
+
 ## Licensing note
 
 `MinerU` integration depends on `mineru_vl_utils` (AGPL-3.0). Confirm license compatibility for your deployment/distribution model.
+
+## LaTeX Walkthrough
+
+A full technical walkthrough (with visuals and real run outputs) is available at:
+
+- `docs/newspaper_parsing_pipeline.tex`
+
+Compile from the `docs/` directory:
+
+```bash
+cd docs
+pdflatex newspaper_parsing_pipeline.tex
+```

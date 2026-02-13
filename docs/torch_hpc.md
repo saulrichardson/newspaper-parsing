@@ -62,7 +62,7 @@ Model envs are referenced by path in `configs/pipeline.torch.json`. Verify they 
 
 ```bash
 BASE=/scratch/$USER/paddleocr_vl15
-$BASE/envs/paddleocr_gpu_py312/bin/paddleocr --help
+$BASE/venv_gpu_l40s_py39/bin/paddleocr --help
 $BASE/envs/mineru25_py310/bin/python -c 'import onnxruntime as ort; print(ort.get_available_providers())'
 $BASE/envs/mineru25_py310/bin/python -c 'import mineru_vl_utils; print(mineru_vl_utils.__version__)'
 ```
@@ -86,10 +86,11 @@ Torch can cancel jobs with low average GPU utilization. To avoid that:
 
 Do not run fusion/review inside a GPU allocation: it will idle the GPU and can trip low-util cancellation.
 
-Recommended (two-job chain):
+Recommended (three-job chain):
 
 1. GPU inference-only job: `paddle_layout,paddle_vl15,dell,mineru`
 2. CPU post-processing job: `fusion,review`
+3. GPU transcription job: `transcription`
 
 ### Split GPU Mode (Recommended When Using H200)
 As of February 2026, Paddle stages can fail on Torch `h200_public` with CUDA kernel image mismatch errors.
@@ -98,6 +99,7 @@ To keep throughput high while still using H200, run a split GPU flow:
 1. L40S GPU job: `paddle_layout,paddle_vl15`
 2. H200 GPU job: `dell,mineru`
 3. CPU job: `fusion,review` (afterok on both GPU jobs)
+4. L40S GPU job: `transcription` (afterok on CPU fusion/review)
 
 One-command helper (run on Torch login, from inside the repo):
 
@@ -137,10 +139,13 @@ mkdir -p "$RUN_DIR"
 # export NEWSBAG_PY="$BASE/envs/mineru25_py310/bin/python"
 
 JID_INFER="$(sbatch --parsable --export=ALL,RUN_DIR="$RUN_DIR" torch/slurm/newsbag_infer_l40s.sbatch)"
-sbatch --dependency=afterok:$JID_INFER --export=ALL,RUN_DIR="$RUN_DIR" torch/slurm/newsbag_fuse_review_cs.sbatch
+JID_FUSE="$(sbatch --parsable --dependency=afterok:$JID_INFER --export=ALL,RUN_DIR="$RUN_DIR" torch/slurm/newsbag_fuse_review_cs.sbatch)"
+sbatch --dependency=afterok:$JID_FUSE --export=ALL,RUN_DIR="$RUN_DIR" torch/slurm/newsbag_transcribe_l40s.sbatch
 ```
 
 Review:
 - `outputs/fusion/variant_leaderboard.tsv`
 - `outputs/fusion/source_leaderboard.tsv`
 - `review/top20_informative/pages/`
+- `outputs/transcription/<variant>/transcription_report.tsv`
+- `outputs/transcription/<variant>/transcript_combined.txt`

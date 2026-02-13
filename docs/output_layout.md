@@ -50,6 +50,16 @@ This document defines the canonical output structure of one `newsbag run`.
     - `per_page_variant_metrics.tsv`: page-level metric rows.
     - `source_leaderboard.tsv`: per-parser ranking table (each Paddle variant + Dell + MinerU).
     - `per_page_source_metrics.tsv`: page-level metric rows per parser.
+  - `transcription/<variant>/`
+    - `transcription_report.tsv`: per-page status + counts (`ocr_line_count`, `assigned_line_count`, etc.).
+    - `transcript_combined.txt`: all pages concatenated in heading order.
+    - `<slug>/`
+      - `ocr.log`: OCR command log for the page.
+      - `ocr_raw.json`: normalized raw OCR payload copy.
+      - `ocr_lines.json`: parsed OCR lines with line-level boxes.
+      - `transcript_boxes.json`: fused boxes with attached OCR lines/text.
+      - `transcript.txt`: page transcript (ordered fused text/title regions).
+      - `ocr_raw_dir/`: original Paddle OCR result artifacts (`*_res.json`, debug PNGs).
 - `review/`
   - `pages/<slug>/`
     - `01_input.png`
@@ -78,6 +88,16 @@ This document defines the canonical output structure of one `newsbag run`.
 - `P2_paddle_union4_plus_dell`
 - `P3_paddle_union4_plus_mineru`
 - `P4_paddle_union4_plus_dell_plus_mineru`
+
+## Pipeline Stage Names
+
+- `paddle_layout`
+- `paddle_vl15`
+- `dell`
+- `mineru`
+- `fusion`
+- `review`
+- `transcription`
 
 ## Normalized Box Schema
 

@@ -10,6 +10,7 @@ from newsbag.fusion import run_fusion
 from newsbag.review import build_review_bundle
 from newsbag.runners.external import run_dell, run_mineru
 from newsbag.runners.paddle import run_paddle_layout_variants, run_paddle_vl15_docparser
+from newsbag.transcription import run_transcription
 from newsbag.utils.io import ensure_dir, write_json, write_lines
 
 
@@ -67,6 +68,7 @@ ALLOWED_STAGES = {
     "mineru",
     "fusion",
     "review",
+    "transcription",
 }
 
 
@@ -108,14 +110,15 @@ def run_pipeline(
             line_cover_threshold=cfg.fusion.line_cover_threshold,
             preferred_recommended_variant=cfg.fusion.recommended_variant,
         )
-    elif "review" in stages_to_run:
+    elif "review" in stages_to_run or "transcription" in stages_to_run:
         candidate = run_dir / "outputs" / "fusion"
         if (candidate / "summary.json").exists():
             fusion_root = candidate
         else:
             raise FileNotFoundError(
-                "review stage requested but fusion outputs not found. "
-                "Run with '--stages fusion,review' or ensure outputs/fusion/summary.json exists."
+                "review/transcription stage requested but fusion outputs not found. "
+                "Run with '--stages fusion,review,transcription' "
+                "or ensure outputs/fusion/summary.json exists."
             )
 
     if "review" in stages_to_run and fusion_root is not None:
@@ -130,6 +133,23 @@ def run_pipeline(
             mode=cfg.review.mode,
             top_k_informative=cfg.review.top_k_informative,
             top_k_miner_delta=cfg.review.top_k_miner_delta,
+        )
+
+    if "transcription" in stages_to_run and fusion_root is not None and cfg.transcription.enabled:
+        preferred_device = cfg.transcription.device.strip()
+        if not preferred_device:
+            preferred_device = cfg.device_order[0] if cfg.device_order else "cpu"
+        run_transcription(
+            run_dir=run_dir,
+            paddleocr_bin=cfg.paddleocr_bin,
+            variant=cfg.transcription.variant.strip() or cfg.fusion.recommended_variant,
+            labels=list(cfg.transcription.labels),
+            min_overlap=cfg.transcription.min_overlap,
+            device=preferred_device,
+            cpu_threads=cfg.transcription.cpu_threads,
+            timeout_sec=cfg.transcription.timeout_sec,
+            max_pages=cfg.transcription.max_pages,
+            resume=cfg.transcription.resume and cfg.resume,
         )
 
     latest_link = cfg.run_root.expanduser().resolve() / "latest"

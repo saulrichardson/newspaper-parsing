@@ -68,5 +68,19 @@
     "mode": "all",
     "top_k_informative": 20,
     "top_k_miner_delta": 20
+  },
+  "transcription": {
+    "enabled": true,
+    "variant": "",
+    "labels": [
+      "text",
+      "title"
+    ],
+    "min_overlap": 0.3,
+    "device": "gpu:0",
+    "cpu_threads": 8,
+    "timeout_sec": 3600,
+    "max_pages": 0,
+    "resume": true
   }
 }

@@ -15,7 +15,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sub = p.add_subparsers(dest="command", required=True)
 
-    runp = sub.add_parser("run", help="Run the full end-to-end layout pipeline.")
+    runp = sub.add_parser("run", help="Run the full end-to-end layout + transcription pipeline.")
     runp.add_argument("--config", required=True, help="Path to pipeline JSON config.")
     runp.add_argument(
         "--run-dir",
@@ -27,7 +27,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default="",
         help=(
             "Comma-separated stages to run. Default is all stages. "
-            "Allowed: paddle_layout,paddle_vl15,dell,mineru,fusion,review"
+            "Allowed: paddle_layout,paddle_vl15,dell,mineru,fusion,review,transcription"
         ),
     )
     return p

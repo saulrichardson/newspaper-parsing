@@ -5,7 +5,7 @@
 # 1) Creates a run directory (RUN_DIR) under /scratch/$USER/paddleocr_vl15/runs
 # 2) Generates a manifest from INPUT_DIR
 # 3) Writes a per-run config.json (based on configs/pipeline.torch.json)
-# 4) Submits GPU inference + CPU fusion/review (afterok)
+# 4) Submits GPU inference + CPU fusion/review + GPU transcription (afterok chain)
 #
 # Usage (on Torch login):
 #   bash torch/slurm/submit_newsbag_from_dir.sh --input-dir /path/to/scans --recursive --gpu l40s
@@ -16,7 +16,7 @@
 #   --gpu l40s|h200|split  Optional. Default: l40s.
 #   --max-pages N       Optional. Limit the manifest to N images (for smoke tests).
 #   --run-dir <dir>     Optional. Explicit run dir (default: /scratch/.../runs/layout_bagging_<ts>)
-#   --stages <csv>      Optional. Override stages for the single GPU job mode (l40s/h200).
+#   --stages <csv>      Optional. Override infer stages for the single GPU job mode (l40s/h200).
 #
 # Optional env:
 #   BASE, PROJECT_ROOT, TEMPLATE_CONFIG_JSON

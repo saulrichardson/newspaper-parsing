@@ -44,7 +44,15 @@ if [ ! -x "$NEWSBAG_PY" ]; then
 fi
 
 # Auto-heal orchestration env drift on shared Torch filesystems.
-if ! "$NEWSBAG_PY" -c 'import newsbag' >/dev/null 2>&1; then
+# Reinstall if package is missing OR points outside PROJECT_ROOT (stale editable install).
+if ! "$NEWSBAG_PY" - <<PY >/dev/null 2>&1
+import pathlib
+import newsbag
+p = pathlib.Path(newsbag.__file__).resolve()
+root = pathlib.Path("$PROJECT_ROOT").resolve()
+raise SystemExit(0 if root in p.parents else 1)
+PY
+then
   echo "[newsbag] installing package into orchestration env: $PROJECT_ROOT"
   if ! "$NEWSBAG_PY" -m pip --version >/dev/null 2>&1; then
     echo "[newsbag] pip missing in orchestration env; bootstrapping with ensurepip"
