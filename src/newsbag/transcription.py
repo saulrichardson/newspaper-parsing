@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from PIL import Image, ImageDraw
+
 from newsbag.utils.proc import run_cmd
 
 
@@ -29,6 +31,26 @@ def _line_overlap_ratio(line_bb: List[float], box_bb: List[float]) -> float:
     if la <= 0:
         return 0.0
     return _inter(line_bb, box_bb) / la
+
+
+def _iou(a: List[float], b: List[float]) -> float:
+    ia = _inter(a, b)
+    if ia <= 0:
+        return 0.0
+    ua = _area(a) + _area(b) - ia
+    if ua <= 0:
+        return 0.0
+    return ia / ua
+
+
+def _coverage(inner: List[float], outer: List[float]) -> float:
+    ia = _inter(inner, outer)
+    if ia <= 0:
+        return 0.0
+    aa = _area(inner)
+    if aa <= 0:
+        return 0.0
+    return ia / aa
 
 
 def _poly_to_bbox(poly: Any) -> Optional[List[float]]:
@@ -178,43 +200,200 @@ def _normalize_fused_boxes(boxes: Iterable[Dict[str, Any]], labels: set[str]) ->
     return out
 
 
-def _assign_lines_to_boxes(
-    fused_boxes: List[Dict[str, Any]],
-    ocr_lines: List[Dict[str, Any]],
+def _dedupe_boxes(
+    candidates: List[Dict[str, Any]],
+    *,
+    cover_drop_threshold: float,
+    iou_drop_threshold: float,
+    prefer_larger_area: bool,
+) -> List[Dict[str, Any]]:
+    if prefer_larger_area:
+        cands = sorted(
+            candidates,
+            key=lambda b: (
+                -_area(b["bbox_xyxy"]),
+                -(float(b.get("score") or 0.0)),
+                int(b.get("reading_order") or 10**9),
+            ),
+        )
+    else:
+        cands = sorted(
+            candidates,
+            key=lambda b: (
+                _area(b["bbox_xyxy"]),
+                -(float(b.get("score") or 0.0)),
+                int(b.get("reading_order") or 10**9),
+            ),
+        )
+
+    kept: List[Dict[str, Any]] = []
+    for cand in cands:
+        bb = cand["bbox_xyxy"]
+        if _area(bb) <= 0:
+            continue
+        redundant = False
+        for k in kept:
+            kbb = k["bbox_xyxy"]
+            if _coverage(bb, kbb) >= cover_drop_threshold:
+                redundant = True
+                break
+            if _iou(bb, kbb) >= iou_drop_threshold:
+                redundant = True
+                break
+        if not redundant:
+            kept.append(cand)
+    return kept
+
+
+def _select_ocr_boxes(fused_boxes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    # OCR needs compact, non-redundant regions. We intentionally keep larger text
+    # containers and suppress nested/duplicate overlaps before crop OCR.
+    title_boxes = [b for b in fused_boxes if b.get("norm_label") == "title"]
+    text_boxes = [b for b in fused_boxes if b.get("norm_label") == "text"]
+
+    title_keep = _dedupe_boxes(
+        title_boxes,
+        cover_drop_threshold=0.92,
+        iou_drop_threshold=0.85,
+        prefer_larger_area=False,
+    )
+    text_keep = _dedupe_boxes(
+        text_boxes,
+        cover_drop_threshold=0.85,
+        iou_drop_threshold=0.75,
+        prefer_larger_area=True,
+    )
+
+    selected = title_keep + text_keep
+    selected.sort(
+        key=lambda x: (
+            int(x.get("reading_order") or 10**9),
+            x["bbox_xyxy"][1],
+            x["bbox_xyxy"][0],
+        )
+    )
+    for i, b in enumerate(selected, 1):
+        b["box_index"] = i
+    return selected
+
+
+def _to_int_crop(
+    bb: List[float],
+    w: int,
+    h: int,
+    pad: int = 2,
+    min_width: int = 24,
+    min_height: int = 18,
+) -> Optional[Tuple[int, int, int, int]]:
+    x1 = max(0, int(math.floor(float(bb[0])) - pad))
+    y1 = max(0, int(math.floor(float(bb[1])) - pad))
+    x2 = min(w, int(math.ceil(float(bb[2])) + pad))
+    y2 = min(h, int(math.ceil(float(bb[3])) + pad))
+    if x2 <= x1 or y2 <= y1:
+        return None
+    if (x2 - x1) < min_width or (y2 - y1) < min_height:
+        return None
+    return (x1, y1, x2, y2)
+
+
+def _translate_lines(
+    lines: List[Dict[str, Any]],
+    ox: float,
+    oy: float,
+    box_index: int,
+    box_order: int,
+    target_bb: List[float],
     min_overlap: float,
 ) -> List[Dict[str, Any]]:
-    boxes = []
+    out: List[Dict[str, Any]] = []
+    for ln in lines:
+        bb = ln.get("bbox_xyxy")
+        if not isinstance(bb, list) or len(bb) != 4:
+            continue
+        try:
+            x1, y1, x2, y2 = [float(v) for v in bb]
+        except Exception:
+            continue
+        if x2 <= x1 or y2 <= y1:
+            continue
+        row = dict(ln)
+        page_bb = [x1 + ox, y1 + oy, x2 + ox, y2 + oy]
+        if min_overlap > 0 and _line_overlap_ratio(page_bb, target_bb) < min_overlap:
+            continue
+        row["bbox_xyxy"] = page_bb
+        row["box_index"] = int(box_index)
+        row["box_reading_order"] = int(box_order)
+        out.append(row)
+    return out
+
+
+def _boxes_from_direct_assignment(fused_boxes: List[Dict[str, Any]], lines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    by_box: Dict[int, List[Dict[str, Any]]] = {}
+    for ln in lines:
+        try:
+            idx = int(ln.get("box_index"))
+        except Exception:
+            continue
+        by_box.setdefault(idx, []).append(ln)
+
+    boxes: List[Dict[str, Any]] = []
     for i, b in enumerate(fused_boxes, 1):
+        lines_i = by_box.get(i, [])
+        lines_i.sort(key=lambda x: (x["bbox_xyxy"][1], x["bbox_xyxy"][0]))
         boxes.append(
             {
                 "box_index": i,
                 "reading_order": int(b.get("reading_order") or i),
                 "norm_label": b.get("norm_label"),
                 "bbox_xyxy": b["bbox_xyxy"],
-                "lines": [],
+                "lines": lines_i,
+                "text": "\n".join(x["text"] for x in lines_i if x.get("text")),
             }
         )
-
-    for ln in ocr_lines:
-        best_idx = None
-        best_ov = 0.0
-        for j, b in enumerate(boxes):
-            ov = _line_overlap_ratio(ln["bbox_xyxy"], b["bbox_xyxy"])
-            if ov > best_ov:
-                best_ov = ov
-                best_idx = j
-        if best_idx is None or best_ov < min_overlap:
-            continue
-        ln2 = dict(ln)
-        ln2["overlap"] = best_ov
-        boxes[best_idx]["lines"].append(ln2)
-
-    for b in boxes:
-        b["lines"].sort(key=lambda x: (x["bbox_xyxy"][1], x["bbox_xyxy"][0]))
-        b["text"] = "\n".join(x["text"] for x in b["lines"] if x.get("text"))
-
     boxes.sort(key=lambda x: x["reading_order"])
     return boxes
+
+
+def _draw_transcription_overlays(
+    image_path: Path,
+    ocr_boxes: List[Dict[str, Any]],
+    ocr_lines: List[Dict[str, Any]],
+    regions_out: Path,
+    lines_out: Path,
+) -> None:
+    with Image.open(image_path).convert("RGB") as base:
+        img_regions = base.copy()
+        draw_regions = ImageDraw.Draw(img_regions)
+        for b in ocr_boxes:
+            bb = b.get("bbox_xyxy") or []
+            if not isinstance(bb, list) or len(bb) != 4:
+                continue
+            x1, y1, x2, y2 = [float(v) for v in bb]
+            if x2 <= x1 or y2 <= y1:
+                continue
+            lbl = str(b.get("norm_label") or "text")
+            color = (29, 161, 242) if lbl == "text" else (235, 87, 87)
+            draw_regions.rectangle([x1, y1, x2, y2], outline=color, width=3)
+            draw_regions.text((x1 + 2, max(0, y1 - 14)), f"{int(b.get('box_index') or 0)}:{lbl}", fill=color)
+        regions_out.parent.mkdir(parents=True, exist_ok=True)
+        img_regions.save(regions_out)
+
+        img_lines = base.copy()
+        draw_lines = ImageDraw.Draw(img_lines)
+        for ln in ocr_lines:
+            bb = ln.get("bbox_xyxy") or []
+            if not isinstance(bb, list) or len(bb) != 4:
+                continue
+            x1, y1, x2, y2 = [float(v) for v in bb]
+            if x2 <= x1 or y2 <= y1:
+                continue
+            box_idx = int(ln.get("box_index") or 0)
+            r = (box_idx * 67) % 255
+            g = (box_idx * 41) % 255
+            bl = (box_idx * 97) % 255
+            draw_lines.rectangle([x1, y1, x2, y2], outline=(r, g, bl), width=1)
+        lines_out.parent.mkdir(parents=True, exist_ok=True)
+        img_lines.save(lines_out)
 
 
 def run_transcription(
@@ -262,6 +441,7 @@ def run_transcription(
                 "variant",
                 "ocr_device",
                 "fused_box_count",
+                "ocr_box_count",
                 "ocr_line_count",
                 "assigned_line_count",
                 "transcript_chars",
@@ -283,79 +463,177 @@ def run_transcription(
             ocr_lines_json = page_dir / "ocr_lines.json"
             transcript_json = page_dir / "transcript_boxes.json"
             transcript_txt = page_dir / "transcript.txt"
+            ocr_regions_overlay = page_dir / "ocr_regions_overlay.png"
+            ocr_lines_overlay = page_dir / "ocr_lines_overlay.png"
 
             if not image_path.exists():
-                wr.writerow([slug, "missing_image", resolved_variant, device, 0, 0, 0, 0, "", "", "", str(ocr_log)])
+                wr.writerow([slug, "missing_image", resolved_variant, device, 0, 0, 0, 0, 0, "", "", "", str(ocr_log)])
                 continue
             if not fused_path.exists():
-                wr.writerow([slug, "missing_fused", resolved_variant, device, 0, 0, 0, 0, "", "", "", str(ocr_log)])
+                wr.writerow([slug, "missing_fused", resolved_variant, device, 0, 0, 0, 0, 0, "", "", "", str(ocr_log)])
                 continue
 
             fused_payload = _load_json(fused_path)
             fused_boxes = _normalize_fused_boxes(fused_payload.get("boxes") or [], labels=labels_set)
+            ocr_boxes = _select_ocr_boxes(fused_boxes)
+            if not ocr_boxes:
+                wr.writerow(
+                    [slug, "no_ocr_boxes", resolved_variant, device, len(fused_boxes), 0, 0, 0, 0, "", "", "", str(ocr_log)]
+                )
+                continue
 
-            if resume and ocr_lines_json.exists() and ocr_raw_json.exists():
+            if resume and ocr_lines_json.exists() and ocr_raw_json.exists() and transcript_json.exists():
+                ocr_raw_payload = _load_json(ocr_raw_json)
                 lines = (_load_json(ocr_lines_json).get("lines") or [])
+                boxed = (_load_json(transcript_json).get("boxes") or [])
+                ocr_boxes = (ocr_raw_payload.get("ocr_boxes") or ocr_boxes)
                 status = "resume"
             else:
+                # ROI-first OCR: run Paddle OCR on fused text/title crops, then remap
+                # OCR line boxes back to page coordinates.
                 ocr_out_dir = page_dir / "ocr_raw_dir"
                 ocr_out_dir.mkdir(parents=True, exist_ok=True)
-                cmd = [
-                    paddleocr_bin,
-                    "ocr",
-                    "-i",
-                    str(image_path),
-                    "--save_path",
-                    str(ocr_out_dir),
-                    "--device",
-                    str(device),
-                    "--cpu_threads",
-                    str(cpu_threads),
-                    "--enable_mkldnn",
-                    "False",
-                ]
-                res = run_cmd(
-                    cmd,
-                    ocr_log,
-                    timeout_sec=timeout_sec,
-                    env={"PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK": "True"},
-                )
-                raw_candidates = sorted(ocr_out_dir.glob("*_res.json"))
-                if res.rc != 0 or not raw_candidates:
-                    wr.writerow(
-                        [
-                            slug,
-                            f"ocr_fail({res.rc})",
-                            resolved_variant,
-                            device,
-                            len(fused_boxes),
-                            0,
-                            0,
-                            0,
-                            "",
-                            "",
-                            "",
-                            str(ocr_log),
-                        ]
+                crops_dir = ocr_out_dir / "crops"
+                crops_dir.mkdir(parents=True, exist_ok=True)
+
+                crop_rows: List[Dict[str, Any]] = []
+                with Image.open(image_path).convert("RGB") as im:
+                    w, h = im.size
+                    for i, b in enumerate(ocr_boxes, 1):
+                        crop_xyxy = _to_int_crop(b["bbox_xyxy"], w, h, pad=2)
+                        if not crop_xyxy:
+                            continue
+                        x1, y1, x2, y2 = crop_xyxy
+                        crop_stem = f"crop_{i:04d}"
+                        crop_path = crops_dir / f"{crop_stem}.png"
+                        im.crop((x1, y1, x2, y2)).save(crop_path)
+                        crop_rows.append(
+                            {
+                                "box_index": i,
+                                "box_reading_order": int(b.get("reading_order") or i),
+                                "norm_label": b.get("norm_label"),
+                                "crop_stem": crop_stem,
+                                "crop_path": str(crop_path),
+                                "page_bbox_xyxy": b["bbox_xyxy"],
+                                "crop_bbox_xyxy": [x1, y1, x2, y2],
+                            }
+                        )
+
+                lines = []
+                if crop_rows:
+                    cmd = [
+                        paddleocr_bin,
+                        "ocr",
+                        "-i",
+                        str(crops_dir),
+                        "--save_path",
+                        str(ocr_out_dir),
+                        "--device",
+                        str(device),
+                        "--cpu_threads",
+                        str(cpu_threads),
+                        "--enable_mkldnn",
+                        "False",
+                    ]
+                    res = run_cmd(
+                        cmd,
+                        ocr_log,
+                        timeout_sec=timeout_sec,
+                        env={"PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK": "True"},
                     )
-                    continue
-                raw_payload = _load_json(raw_candidates[0])
-                _write_json(ocr_raw_json, raw_payload)
-                lines = _parse_ocr_lines(raw_payload)
-                _write_json(ocr_lines_json, {"slug": slug, "line_count": len(lines), "lines": lines})
+                    if res.rc != 0:
+                        wr.writerow(
+                            [
+                                slug,
+                                f"ocr_fail({res.rc})",
+                                resolved_variant,
+                                device,
+                                len(fused_boxes),
+                                len(ocr_boxes),
+                                0,
+                                0,
+                                0,
+                                "",
+                                "",
+                                "",
+                                str(ocr_log),
+                            ]
+                        )
+                        continue
+                    for row in crop_rows:
+                        raw_path = ocr_out_dir / f"{row['crop_stem']}_res.json"
+                        if not raw_path.exists():
+                            alt = list(ocr_out_dir.glob(f"{row['crop_stem']}*_res.json"))
+                            raw_path = alt[0] if alt else raw_path
+                        row["raw_json"] = str(raw_path) if raw_path.exists() else ""
+                        if not raw_path.exists():
+                            row["ocr_line_count"] = 0
+                            continue
+                        payload = _load_json(raw_path)
+                        crop_lines = _parse_ocr_lines(payload)
+                        row["ocr_line_count"] = len(crop_lines)
+                        cb = row["crop_bbox_xyxy"]
+                        lines.extend(
+                            _translate_lines(
+                                crop_lines,
+                                ox=float(cb[0]),
+                                oy=float(cb[1]),
+                                box_index=int(row["box_index"]),
+                                box_order=int(row["box_reading_order"]),
+                                target_bb=[float(v) for v in row["page_bbox_xyxy"]],
+                                min_overlap=float(min_overlap),
+                            )
+                        )
+
+                lines.sort(
+                    key=lambda x: (
+                        int(x.get("box_reading_order") or 10**9),
+                        x["bbox_xyxy"][1],
+                        x["bbox_xyxy"][0],
+                    )
+                )
+                boxed = _boxes_from_direct_assignment(fused_boxes=ocr_boxes, lines=lines)
+                _write_json(
+                    ocr_raw_json,
+                    {
+                        "slug": slug,
+                        "mode": "roi_fused",
+                        "variant": resolved_variant,
+                        "device": device,
+                        "fused_box_count": len(fused_boxes),
+                        "ocr_box_count": len(ocr_boxes),
+                        "crop_count": len(crop_rows),
+                        "ocr_boxes": ocr_boxes,
+                        "crops": crop_rows,
+                    },
+                )
+                _write_json(
+                    ocr_lines_json,
+                    {"slug": slug, "mode": "roi_fused", "line_count": len(lines), "lines": lines},
+                )
                 status = "ok"
 
-            boxed = _assign_lines_to_boxes(fused_boxes=fused_boxes, ocr_lines=lines, min_overlap=min_overlap)
             _write_json(
                 transcript_json,
                 {
                     "slug": slug,
                     "variant": resolved_variant,
+                    "mode": "roi_fused",
                     "labels": sorted(labels_set),
-                    "box_count": len(fused_boxes),
+                    "fused_box_count": len(fused_boxes),
+                    "ocr_box_count": len(ocr_boxes),
+                    "box_count": len(ocr_boxes),
                     "ocr_line_count": len(lines),
                     "boxes": boxed,
                 },
+            )
+
+            _draw_transcription_overlays(
+                image_path=image_path,
+                ocr_boxes=ocr_boxes,
+                ocr_lines=lines,
+                regions_out=ocr_regions_overlay,
+                lines_out=ocr_lines_overlay,
             )
 
             text_blocks = [b.get("text", "").strip() for b in boxed if str(b.get("text", "")).strip()]
@@ -370,6 +648,7 @@ def run_transcription(
                     resolved_variant,
                     device,
                     len(fused_boxes),
+                    len(ocr_boxes),
                     len(lines),
                     assigned,
                     len(page_text),
@@ -385,4 +664,3 @@ def run_transcription(
     combined_txt = out_root / "transcript_combined.txt"
     combined_txt.write_text("\n".join(combined_lines).strip() + "\n", encoding="utf-8")
     return out_root
-

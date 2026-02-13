@@ -9,7 +9,7 @@ This repository is intentionally scoped to one production flow:
 - Dell American Stories layout parser
 - MinerU2.5 layout parser
 - Cross-model fusion with anti-noise gating and review pack generation
-- Fused-region transcription with Paddle OCR (reading-order transcript artifacts)
+- Fused-region transcription with Paddle OCR over fused ROIs (reading-order transcript artifacts)
 
 No other parser families are in the active path.
 
@@ -223,15 +223,31 @@ bash torch/slurm/submit_newsbag_from_dir.sh \
 
 ### Actual transcription outputs
 
+Transcription is ROI-first: Paddle OCR runs on a cleaned non-redundant subset of fused `text/title`
+regions (not full-page OCR), then lines are remapped to page coordinates and emitted in fused reading order.
+
 - `outputs/transcription/P4_paddle_union4_plus_dell_plus_mineru/transcription_report.tsv`
 - `outputs/transcription/P4_paddle_union4_plus_dell_plus_mineru/transcript_combined.txt`
+- `outputs/transcription/P4_paddle_union4_plus_dell_plus_mineru/<slug>/ocr_regions_overlay.png`
+- `outputs/transcription/P4_paddle_union4_plus_dell_plus_mineru/<slug>/ocr_lines_overlay.png`
 
 Transcription report excerpt:
 
-| Page | Fused Boxes | OCR Lines | Assigned Lines | Transcript Chars |
-|---|---:|---:|---:|---:|
-| `abilene-reporter-news-apr-29-1946-p-19` | 331 | 894 | 680 | 15435 |
-| `bakersfield-californian-aug-31-1937-p-14` | 457 | 960 | 930 | 31061 |
+| Page | Fused Boxes | OCR Regions | OCR Lines | Assigned Lines | Transcript Chars |
+|---|---:|---:|---:|---:|---:|
+| `abilene-reporter-news-apr-29-1946-p-19` | 331 | 54 | 3814 | 3814 | 32396 |
+| `bakersfield-californian-aug-31-1937-p-14` | 457 | 112 | 2871 | 2871 | 31760 |
+
+Cleaned OCR-region counts in this rerun:
+
+- Abilene: `331 fused boxes -> 54 OCR regions`
+- Bakersfield: `457 fused boxes -> 112 OCR regions`
+
+![Abilene cleaned OCR regions](docs/images/mini_run/abilene_ocr_regions_overlay.png)
+
+![Abilene OCR line overlay](docs/images/mini_run/abilene_ocr_lines_overlay.png)
+
+![Bakersfield cleaned OCR regions](docs/images/mini_run/bakersfield_ocr_regions_overlay.png)
 
 ## Licensing note
 

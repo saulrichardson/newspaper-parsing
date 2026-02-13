@@ -55,11 +55,15 @@ This document defines the canonical output structure of one `newsbag run`.
     - `transcript_combined.txt`: all pages concatenated in heading order.
     - `<slug>/`
       - `ocr.log`: OCR command log for the page.
-      - `ocr_raw.json`: normalized raw OCR payload copy.
-      - `ocr_lines.json`: parsed OCR lines with line-level boxes.
-      - `transcript_boxes.json`: fused boxes with attached OCR lines/text.
+      - `ocr_raw.json`: ROI OCR metadata (`mode=roi_fused`, crop list, crop-level raw paths and line counts).
+      - `ocr_lines.json`: parsed OCR lines remapped to page coordinates (`mode=roi_fused`).
+      - `transcript_boxes.json`: fused boxes with attached OCR lines/text (one OCR assignment bin per fused box).
       - `transcript.txt`: page transcript (ordered fused text/title regions).
-      - `ocr_raw_dir/`: original Paddle OCR result artifacts (`*_res.json`, debug PNGs).
+      - `ocr_regions_overlay.png`: original page with cleaned OCR region boxes used for crop OCR.
+      - `ocr_lines_overlay.png`: original page with remapped OCR line boxes.
+      - `ocr_raw_dir/`: Paddle OCR artifacts for the fused crops.
+        - `crops/crop_XXXX.png`: input crops cut from fused boxes.
+        - `crop_XXXX_res.json`, `crop_XXXX_ocr_res_img.png`, ...: per-crop OCR outputs.
 - `review/`
   - `pages/<slug>/`
     - `01_input.png`

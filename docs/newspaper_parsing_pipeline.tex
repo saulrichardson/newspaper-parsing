@@ -50,6 +50,10 @@ This repository formalizes a single production pipeline for newspaper parsing:
   \item \texttt{transcription}
 \end{enumerate}
 
+\noindent
+Transcription is ROI-first: Paddle OCR runs on a cleaned non-redundant subset of fused
+\texttt{text/title} boxes, then OCR lines are remapped to page coordinates and serialized in fused reading order.
+
 Run all stages:
 \begin{lstlisting}
 newsbag run --config configs/pipeline.torch.json \
@@ -157,20 +161,40 @@ Generated artifacts:
       \item \texttt{ocr\_lines.json}
       \item \texttt{transcript\_boxes.json}
       \item \texttt{transcript.txt}
+      \item \texttt{ocr\_regions\_overlay.png}
+      \item \texttt{ocr\_lines\_overlay.png}
     \end{itemize}
 \end{itemize}
 
 \textbf{Transcription report excerpt:}
 \begin{center}
-\begin{tabular}{lrrrr}
+\begin{tabular}{lrrrrr}
 \toprule
-Slug & Fused Boxes & OCR Lines & Assigned Lines & Transcript Chars \\
+Slug & Fused Boxes & OCR Regions & OCR Lines & Assigned Lines & Transcript Chars \\
 \midrule
-\texttt{abilene...p-19} & 331 & 894 & 680 & 15435 \\
-\texttt{bakersfield...p-14} & 457 & 960 & 930 & 31061 \\
+\texttt{abilene...p-19} & 331 & 54 & 3814 & 3814 & 32396 \\
+\texttt{bakersfield...p-14} & 457 & 112 & 2871 & 2871 & 31760 \\
 \bottomrule
 \end{tabular}
 \end{center}
+
+\textbf{OCR region reduction in this run:}
+\begin{itemize}
+  \item \texttt{abilene...p-19}: 331 fused boxes $\rightarrow$ 54 OCR regions
+  \item \texttt{bakersfield...p-14}: 457 fused boxes $\rightarrow$ 112 OCR regions
+\end{itemize}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.92\textwidth]{images/mini_run/abilene_ocr_regions_overlay.png}
+\caption{Abilene OCR regions actually passed to Paddle OCR after overlap cleaning.}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.92\textwidth]{images/mini_run/abilene_ocr_lines_overlay.png}
+\caption{Abilene remapped OCR line boxes on the original page.}
+\end{figure}
 
 \section{What to Inspect First}
 \begin{enumerate}

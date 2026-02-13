@@ -10,8 +10,8 @@ from newsbag.transcription import run_transcription
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=(
-            "Run Paddle OCR per page and attach OCR lines to fused layout boxes "
-            "(text/title) for transcript generation."
+            "Run Paddle OCR on fused text/title crops and generate "
+            "reading-order transcripts aligned to fused layout boxes."
         )
     )
     p.add_argument("--run-dir", required=True, help="Pipeline run directory containing outputs/fusion.")
