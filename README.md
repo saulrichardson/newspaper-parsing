@@ -263,5 +263,6 @@ Compile from the `docs/` directory:
 
 ```bash
 cd docs
-pdflatex newspaper_parsing_pipeline.tex
+xelatex newspaper_parsing_pipeline.tex
+xelatex newspaper_parsing_pipeline.tex
 ```
