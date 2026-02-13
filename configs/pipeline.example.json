@@ -49,7 +49,8 @@
     "conf": 0.005,
     "iou": 0.1,
     "imgsz": 1280,
-    "require_cuda_provider": false
+    "require_cuda_provider": false,
+    "min_nonempty_pages": 1
   },
   "mineru": {
     "enabled": true,
@@ -58,7 +59,8 @@
     "script_path": "src/newsbag/runners/run_mineru25_layout.py",
     "model_id": "opendatalab/MinerU2.5-2509-1.2B",
     "max_pages": 0,
-    "require_cuda": false
+    "require_cuda": false,
+    "min_nonempty_pages": 1
   },
   "fusion": {
     "line_cover_threshold": 0.5,

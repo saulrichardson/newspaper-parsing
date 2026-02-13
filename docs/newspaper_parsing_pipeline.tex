@@ -66,7 +66,7 @@ Recommended orchestration on Torch is a three-job chain:
 
 This structure avoids low-GPU-utilization cancellation by keeping CPU-only steps off GPU partitions.
 
-\section{Case Study: 2-Page Mini Run}
+\section{Case Study: 2-Page Mini Run (Corrected Dell)}
 \textbf{Run ID:} \texttt{layout\_bagging\_20260213\_024626}\\
 \textbf{Pages:}
 \begin{itemize}
@@ -102,6 +102,12 @@ This structure avoids low-GPU-utilization cancellation by keeping CPU-only steps
 \caption{Bakersfield with/without MinerU panel (\texttt{P2} vs \texttt{P4}).}
 \end{figure}
 
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.92\textwidth]{images/mini_run/abilene_dell_layout.png}
+\caption{Abilene Dell-only overlay after runner fix (non-empty output).}
+\end{figure}
+
 \clearpage
 \subsection{Actual Metrics (from Run Artifacts)}
 Variant leaderboard excerpt (\texttt{outputs/fusion/variant\_leaderboard.tsv}):
@@ -110,9 +116,9 @@ Variant leaderboard excerpt (\texttt{outputs/fusion/variant\_leaderboard.tsv}):
 \toprule
 Variant & Mean Base Recall & Mean Text Area & Mean Boxes \\
 \midrule
-\texttt{S1\_paddle\_best\_single} & 0.979841 & 0.698220 & 224.5 \\
-\texttt{P1\_paddle\_union4} & 0.988996 & 0.704479 & 305.5 \\
-\texttt{P4\_paddle\_union4\_plus\_dell\_plus\_mineru} & 0.989998 & 0.707744 & 382.0 \\
+\texttt{P2\_paddle\_union4\_plus\_dell} & 0.997774 & 0.737427 & 329.0 \\
+\texttt{S1\_paddle\_best\_single} & 0.966463 & 0.698220 & 224.5 \\
+\texttt{P4\_paddle\_union4\_plus\_dell\_plus\_mineru} & 0.997929 & 0.738797 & 404.5 \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -123,12 +129,22 @@ Source leaderboard excerpt (\texttt{outputs/fusion/source\_leaderboard.tsv}):
 \toprule
 Source & Mean Base Recall & Mean Text Area & Mean Boxes \\
 \midrule
-\texttt{pld\_v2\_thr03} & 0.978316 & 0.689416 & 209.5 \\
 \texttt{pld\_plusL\_thr03} & 0.979841 & 0.698220 & 224.5 \\
-\texttt{mineru25} & 0.481727 & 0.427513 & 125.0 \\
+\texttt{pld\_v2\_thr03} & 0.958174 & 0.689416 & 209.5 \\
+\texttt{dell\_c0005\_i010} & 0.884912 & 0.584741 & 25.0 \\
+\texttt{mineru25} & 0.473897 & 0.427513 & 125.0 \\
 \bottomrule
 \end{tabular}
 \end{center}
+
+\subsection{Dell Output Verification}
+The corrected Dell runner produced non-empty outputs on both pages:
+\begin{itemize}
+  \item \texttt{abilene-reporter-news-apr-29-1946-p-19}: 23 boxes
+  \item \texttt{bakersfield-californian-aug-31-1937-p-14}: 28 boxes
+\end{itemize}
+Counts are from:
+\texttt{outputs/sources/dell/dell\_c0005\_i010/<slug>/layout\_boxes.normalized.json}
 
 \subsection{Transcription Outputs}
 Generated artifacts:
@@ -150,8 +166,8 @@ Generated artifacts:
 \toprule
 Slug & Fused Boxes & OCR Lines & Assigned Lines & Transcript Chars \\
 \midrule
-\texttt{abilene...p-19} & 315 & 894 & 678 & 15394 \\
-\texttt{bakersfield...p-14} & 429 & 960 & 929 & 31105 \\
+\texttt{abilene...p-19} & 331 & 894 & 680 & 15435 \\
+\texttt{bakersfield...p-14} & 457 & 960 & 930 & 31061 \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -171,7 +187,9 @@ Slug & Fused Boxes & OCR Lines & Assigned Lines & Transcript Chars \\
   \item Torch config is pinned to a compute-node-valid Paddle binary:
   \texttt{/scratch/\$USER/paddleocr\_vl15/venv\_gpu\_l40s\_py39/bin/paddleocr}
   \item Slurm wrappers now re-install editable package automatically if the active \texttt{newsbag} import path drifts outside \texttt{PROJECT\_ROOT}.
+  \item External-source fail-fast checks are now first-class:
+  \texttt{dell.min\_nonempty\_pages} and \texttt{mineru.min\_nonempty\_pages}.
+  If a source is empty across all processed pages, the run exits before fusion/review.
 \end{itemize}
 
 \end{document}
-

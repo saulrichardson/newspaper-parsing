@@ -38,6 +38,7 @@ class DellConfig:
     iou: float = 0.10
     imgsz: int = 1280
     require_cuda_provider: bool = False
+    min_nonempty_pages: int = 1
 
 
 @dataclass
@@ -49,6 +50,7 @@ class MinerConfig:
     model_id: str = "opendatalab/MinerU2.5-2509-1.2B"
     max_pages: int = 0
     require_cuda: bool = False
+    min_nonempty_pages: int = 1
 
 
 @dataclass
@@ -200,6 +202,7 @@ def load_config(path: Path) -> PipelineConfig:
         iou=float(dl.get("iou", 0.10)),
         imgsz=int(dl.get("imgsz", 1280)),
         require_cuda_provider=bool(dl.get("require_cuda_provider", False)),
+        min_nonempty_pages=int(dl.get("min_nonempty_pages", 1)),
     )
 
     mn = payload.get("mineru", {})
@@ -214,6 +217,7 @@ def load_config(path: Path) -> PipelineConfig:
         model_id=str(mn.get("model_id", "opendatalab/MinerU2.5-2509-1.2B")),
         max_pages=int(mn.get("max_pages", 0)),
         require_cuda=bool(mn.get("require_cuda", False)),
+        min_nonempty_pages=int(mn.get("min_nonempty_pages", 1)),
     )
 
     fs = payload.get("fusion", {})
@@ -312,6 +316,7 @@ def config_to_jsonable(cfg: PipelineConfig) -> Dict[str, Any]:
             "iou": cfg.dell.iou,
             "imgsz": cfg.dell.imgsz,
             "require_cuda_provider": cfg.dell.require_cuda_provider,
+            "min_nonempty_pages": cfg.dell.min_nonempty_pages,
         },
         "mineru": {
             "enabled": cfg.mineru.enabled,
@@ -321,6 +326,7 @@ def config_to_jsonable(cfg: PipelineConfig) -> Dict[str, Any]:
             "model_id": cfg.mineru.model_id,
             "max_pages": cfg.mineru.max_pages,
             "require_cuda": cfg.mineru.require_cuda,
+            "min_nonempty_pages": cfg.mineru.min_nonempty_pages,
         },
         "fusion": {
             "line_cover_threshold": cfg.fusion.line_cover_threshold,

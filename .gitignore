@@ -32,3 +32,4 @@ _reference/
 *.log
 *.out
 *.toc
+docs/*.pdf

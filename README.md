@@ -172,8 +172,12 @@ Default recommended variant in Torch config:
 - Always request Torch GPUs via `--gres=gpu:<type>:1`.
 - Keep fusion/review off GPU partitions (CPU job only) to avoid low-util cancellation.
 - As of February 2026 on Torch, Paddle stages are most reliable on `l40s_public`; split mode handles this automatically.
+- External-source guardrails are enabled by default:
+  - `dell.min_nonempty_pages` (default `1`)
+  - `mineru.min_nonempty_pages` (default `1`)
+  If an external source returns empty boxes across all processed pages, the run fails fast before fusion/review.
 
-## Mini-Run Example (Abilene + Bakersfield, Feb 13, 2026)
+## Mini-Run Example (Abilene + Bakersfield, Corrected Dell, Feb 13, 2026)
 
 This is a real completed run on Torch with two representative pages:
 
@@ -186,9 +190,8 @@ Submission command used:
 ```bash
 cd /scratch/$USER/paddleocr_vl15/newspaper-parsing
 bash torch/slurm/submit_newsbag_from_dir.sh \
-  --input-dir /scratch/$USER/paddleocr_vl15/input/ad_hoc_newspapers_20260205_190618 \
-  --gpu l40s \
-  --max-pages 2
+  --input-dir /scratch/$USER/paddleocr_vl15/input/newspaper_parsing_example_20260213 \
+  --gpu l40s
 ```
 
 ### Visuals from that run
@@ -201,18 +204,34 @@ bash torch/slurm/submit_newsbag_from_dir.sh \
 
 ![Bakersfield with vs without MinerU](docs/images/mini_run/bakersfield_miner_delta.png)
 
+![Abilene Dell-only overlay (corrected)](docs/images/mini_run/abilene_dell_layout.png)
+
 ### Actual output metrics (from `variant_leaderboard.tsv`)
 
 | Variant | Mean Base Recall | Mean Text Area | Mean Boxes |
 |---|---:|---:|---:|
-| `S1_paddle_best_single` | 0.979841 | 0.698220 | 224.5 |
-| `P1_paddle_union4` | 0.988996 | 0.704479 | 305.5 |
-| `P4_paddle_union4_plus_dell_plus_mineru` | 0.989998 | 0.707744 | 382.0 |
+| `P2_paddle_union4_plus_dell` | 0.997774 | 0.737427 | 329.0 |
+| `S1_paddle_best_single` | 0.966463 | 0.698220 | 224.5 |
+| `P4_paddle_union4_plus_dell_plus_mineru` | 0.997929 | 0.738797 | 404.5 |
+
+### Dell sanity check (corrected)
+
+- `abilene-reporter-news-apr-29-1946-p-19`: `23` Dell boxes
+- `bakersfield-californian-aug-31-1937-p-14`: `28` Dell boxes
+- Source files:
+  - `outputs/sources/dell/dell_c0005_i010/<slug>/layout_boxes.normalized.json`
 
 ### Actual transcription outputs
 
 - `outputs/transcription/P4_paddle_union4_plus_dell_plus_mineru/transcription_report.tsv`
 - `outputs/transcription/P4_paddle_union4_plus_dell_plus_mineru/transcript_combined.txt`
+
+Transcription report excerpt:
+
+| Page | Fused Boxes | OCR Lines | Assigned Lines | Transcript Chars |
+|---|---:|---:|---:|---:|
+| `abilene-reporter-news-apr-29-1946-p-19` | 331 | 894 | 680 | 15435 |
+| `bakersfield-californian-aug-31-1937-p-14` | 457 | 960 | 930 | 31061 |
 
 ## Licensing note
 

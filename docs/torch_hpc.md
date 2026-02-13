@@ -67,6 +67,15 @@ $BASE/envs/mineru25_py310/bin/python -c 'import onnxruntime as ort; print(ort.ge
 $BASE/envs/mineru25_py310/bin/python -c 'import mineru_vl_utils; print(mineru_vl_utils.__version__)'
 ```
 
+Important: some Paddle envs can work on login nodes but fail on compute nodes. Validate on a compute node
+before long runs (for example via `sbatch --wrap`):
+
+```bash
+sbatch --parsable -A torch_pr_609_general -p cs \
+  --cpus-per-task=2 --mem=4G --time=00:05:00 \
+  --wrap '/scratch/$USER/paddleocr_vl15/venv_gpu_l40s_py39/bin/paddleocr --help'
+```
+
 ## GPU Utilization Guardrails
 
 Torch can cancel jobs with low average GPU utilization. To avoid that:
@@ -81,6 +90,9 @@ Torch can cancel jobs with low average GPU utilization. To avoid that:
 - `nvidia-smi` at job start.
 - Check `outputs/sources/dell/<variant>/run_report.json` for `providers_used`.
 - Check `outputs/sources/mineru/<variant>/run_meta.json` for `cuda_available`.
+- Check external-source fail-fast thresholds in config:
+  - `dell.min_nonempty_pages`
+  - `mineru.min_nonempty_pages`
 
 ## Suggested Submission Flow
 

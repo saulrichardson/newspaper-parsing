@@ -104,6 +104,8 @@ def run_dell(dcfg: DellConfig, manifest: Path, run_dir: Path, resume: bool = Tru
     per_page: Dict[str, Path] = {}
     agg_source_labels: Counter[str] = Counter()
     agg_norm_labels: Counter[str] = Counter()
+    ok_pages = 0
+    nonempty_pages = 0
     manifest_slugs = _load_manifest_slugs(manifest)
     page_report_rows = report_obj.get("pages") or []
     page_report_map = {
@@ -154,6 +156,9 @@ def run_dell(dcfg: DellConfig, manifest: Path, run_dir: Path, resume: bool = Tru
                 per_page[slug] = norm_path
                 agg_source_labels.update([str(b.get("source_label") or "") for b in normalized])
                 agg_norm_labels.update([str(b.get("norm_label") or "") for b in normalized])
+                ok_pages += 1
+                if normalized:
+                    nonempty_pages += 1
 
             wr.writerow(
                 [
@@ -179,6 +184,14 @@ def run_dell(dcfg: DellConfig, manifest: Path, run_dir: Path, resume: bool = Tru
             "providers_used": providers_used,
         },
     )
+    if ok_pages > 0 and nonempty_pages < int(dcfg.min_nonempty_pages):
+        raise RuntimeError(
+            "Dell produced too few non-empty pages: "
+            f"nonempty_pages={nonempty_pages}, ok_pages={ok_pages}, "
+            f"required_min_nonempty_pages={dcfg.min_nonempty_pages}. "
+            "This usually indicates a runner/config regression. "
+            f"Check {run_dir / 'reports' / f'dell_{dcfg.variant_id}.tsv'} and {log_file}."
+        )
     return per_page
 
 
@@ -216,6 +229,8 @@ def run_mineru(mcfg: MinerConfig, manifest: Path, run_dir: Path, resume: bool = 
     per_page: Dict[str, Path] = {}
     agg_source_labels: Counter[str] = Counter()
     agg_norm_labels: Counter[str] = Counter()
+    ok_pages = 0
+    nonempty_pages = 0
     manifest_slugs = _load_manifest_slugs(manifest)
     report_src = out_root / "run_report.tsv"
     report_rows: Dict[str, Dict[str, str]] = {}
@@ -263,6 +278,9 @@ def run_mineru(mcfg: MinerConfig, manifest: Path, run_dir: Path, resume: bool = 
                 per_page[slug] = norm_path
                 agg_source_labels.update([str(b.get("source_label") or "") for b in normalized])
                 agg_norm_labels.update([str(b.get("norm_label") or "") for b in normalized])
+                ok_pages += 1
+                if normalized:
+                    nonempty_pages += 1
 
             wr.writerow(
                 [
@@ -289,4 +307,12 @@ def run_mineru(mcfg: MinerConfig, manifest: Path, run_dir: Path, resume: bool = 
             "model_id": meta_obj.get("model_id"),
         },
     )
+    if ok_pages > 0 and nonempty_pages < int(mcfg.min_nonempty_pages):
+        raise RuntimeError(
+            "MinerU produced too few non-empty pages: "
+            f"nonempty_pages={nonempty_pages}, ok_pages={ok_pages}, "
+            f"required_min_nonempty_pages={mcfg.min_nonempty_pages}. "
+            "This usually indicates a runner/config regression. "
+            f"Check {run_dir / 'reports' / f'mineru_{mcfg.variant_id}.tsv'} and {log_file}."
+        )
     return per_page
