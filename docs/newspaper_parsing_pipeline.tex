@@ -78,9 +78,6 @@ This structure avoids low-GPU-utilization cancellation by keeping CPU-only steps
   \item \texttt{bakersfield-californian-aug-31-1937-p-14}
 \end{itemize}
 
-\textbf{Source root (Torch):}
-\texttt{/scratch/\$USER/paddleocr\_vl15/runs/layout\_bagging\_20260213\_024626}
-
 \subsection{Visual Outputs}
 \begin{figure}[h]
 \centering
@@ -114,7 +111,7 @@ This structure avoids low-GPU-utilization cancellation by keeping CPU-only steps
 
 \clearpage
 \subsection{Actual Metrics (from Run Artifacts)}
-Variant leaderboard excerpt (\texttt{outputs/fusion/variant\_leaderboard.tsv}):
+Variant leaderboard excerpt:
 \begin{center}
 \begin{tabular}{lrrr}
 \toprule
@@ -127,7 +124,7 @@ Variant & Mean Base Recall & Mean Text Area & Mean Boxes \\
 \end{tabular}
 \end{center}
 
-Source leaderboard excerpt (\texttt{outputs/fusion/source\_leaderboard.tsv}):
+Source leaderboard excerpt:
 \begin{center}
 \begin{tabular}{lrrr}
 \toprule
@@ -147,22 +144,21 @@ The corrected Dell runner produced non-empty outputs on both pages:
   \item \texttt{abilene-reporter-news-apr-29-1946-p-19}: 23 boxes
   \item \texttt{bakersfield-californian-aug-31-1937-p-14}: 28 boxes
 \end{itemize}
-Counts are from:
-\texttt{outputs/sources/dell/dell\_c0005\_i010/<slug>/layout\_boxes.normalized.json}
+Counts were computed directly from the normalized Dell layout outputs for each page.
 
 \subsection{Transcription Outputs}
 Generated artifacts:
 \begin{itemize}
-  \item \texttt{outputs/transcription/P4\_paddle\_union4\_plus\_dell\_plus\_mineru/transcription\_report.tsv}
-  \item \texttt{outputs/transcription/P4\_paddle\_union4\_plus\_dell\_plus\_mineru/transcript\_combined.txt}
+  \item Transcription report (TSV)
+  \item Combined transcript (TXT)
   \item Per-page:
     \begin{itemize}
-      \item \texttt{ocr\_raw.json}
-      \item \texttt{ocr\_lines.json}
-      \item \texttt{transcript\_boxes.json}
-      \item \texttt{transcript.txt}
-      \item \texttt{ocr\_regions\_overlay.png}
-      \item \texttt{ocr\_lines\_overlay.png}
+      \item OCR metadata JSON
+      \item OCR line JSON (page coordinates)
+      \item Transcript-by-box JSON
+      \item Transcript text
+      \item OCR region overlay image
+      \item OCR line overlay image
     \end{itemize}
 \end{itemize}
 
@@ -184,6 +180,28 @@ Slug & Fused Boxes & OCR Regions & OCR Lines & Assigned Lines & Transcript Chars
   \item \texttt{bakersfield...p-14}: 457 fused boxes $\rightarrow$ 112 OCR regions
 \end{itemize}
 
+\subsection{OCR Output Examples}
+The snippets below are direct transcript excerpts from the fused-layout OCR stage.
+
+\textbf{Abilene excerpt:}
+\begin{lstlisting}
+Board of Adjustment consistin
+of five (5) members.each to be
+appointed by a majority of the
+Board of Commissioners for a
+term of two years and removabl
+for cause by the appointing authority.
+\end{lstlisting}
+
+\textbf{Bakersfield excerpt (hard page, tiny legal text):}
+\begin{lstlisting}
+LEGAL NOTICE
+The Planning Commission may adopt
+such form as said Commission
+deems advisable.
+... (dense legal columns with OCR noise)
+\end{lstlisting}
+
 \begin{figure}[h]
 \centering
 \includegraphics[width=0.92\textwidth]{images/mini_run/abilene_ocr_regions_overlay.png}
@@ -198,19 +216,18 @@ Slug & Fused Boxes & OCR Regions & OCR Lines & Assigned Lines & Transcript Chars
 
 \section{What to Inspect First}
 \begin{enumerate}
-  \item \texttt{review/pages/<slug>/06\_board.png}
-  \item \texttt{review/pages/<slug>/07\_with\_vs\_without\_miner.png}
-  \item \texttt{outputs/fusion/variant\_leaderboard.tsv}
-  \item \texttt{outputs/transcription/<variant>/transcription\_report.tsv}
-  \item \texttt{outputs/transcription/<variant>/<slug>/transcript.txt}
+  \item Full model board for each page
+  \item With-vs-without MinerU comparison panel
+  \item Variant leaderboard table
+  \item Transcription report table
+  \item Transcript text for each page
 \end{enumerate}
 
 \section{Reproducibility Notes}
 \begin{itemize}
-  \item The run writes \texttt{manifests/config.resolved.json} and \texttt{manifests/images.resolved.txt}.
-  \item Torch config is pinned to a compute-node-valid Paddle binary:
-  \texttt{/scratch/\$USER/paddleocr\_vl15/venv\_gpu\_l40s\_py39/bin/paddleocr}
-  \item Slurm wrappers now re-install editable package automatically if the active \texttt{newsbag} import path drifts outside \texttt{PROJECT\_ROOT}.
+  \item The run records resolved configuration and resolved image manifest metadata.
+  \item GPU inference and OCR were executed on compute-node-validated environments.
+  \item Slurm wrappers re-install the editable package if runtime import roots drift from the project root.
   \item External-source fail-fast checks are now first-class:
   \texttt{dell.min\_nonempty\_pages} and \texttt{mineru.min\_nonempty\_pages}.
   If a source is empty across all processed pages, the run exits before fusion/review.
