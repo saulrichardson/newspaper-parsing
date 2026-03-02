@@ -5,6 +5,7 @@ import json
 import os
 from collections import Counter
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Dict, Iterable, List
 
 from newsbag.config import DellConfig, MinerConfig
@@ -88,13 +89,23 @@ def run_dell(dcfg: DellConfig, manifest: Path, run_dir: Path, resume: bool = Tru
         cmd.extend(["--repo_src", dcfg.repo_src])
     if resume:
         cmd.append("--resume")
-    result = run_cmd(cmd, log_file, timeout_sec=12 * 3600)
-
     run_report = out_root / "run_report.json"
-    report_obj = read_json(run_report) if run_report.exists() else {}
+    normalize_only = os.environ.get("NEWSBAG_EXTERNAL_NORMALIZE_ONLY", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "y",
+    )
+    if normalize_only:
+        result = SimpleNamespace(rc=0, seconds=0.0)
+        report_obj = read_json(run_report) if run_report.exists() else {}
+    else:
+        result = run_cmd(cmd, log_file, timeout_sec=12 * 3600)
+        report_obj = read_json(run_report) if run_report.exists() else {}
+
     providers_used = report_obj.get("providers_used") or []
     has_cuda_provider = any("CUDA" in str(x) for x in providers_used)
-    if dcfg.require_cuda_provider and not has_cuda_provider:
+    if (not normalize_only) and dcfg.require_cuda_provider and not has_cuda_provider:
         raise RuntimeError(
             f"Dell run did not use CUDAExecutionProvider (providers_used={providers_used}). "
             "This would likely cause low GPU utilization / cancellation on Torch."
@@ -133,6 +144,9 @@ def run_dell(dcfg: DellConfig, manifest: Path, run_dir: Path, resume: bool = Tru
             row_meta = page_report_map.get(slug, {})
             row_status = str(row_meta.get("status") or "")
             status_ok = row_status in ("ok", "resume")
+            if boxes_json.exists() and not status_ok:
+                # Backfill old/raw-only runs where run_report.json is missing or incomplete.
+                status_ok = True
             status = "ok" if status_ok and boxes_json.exists() else (row_status or "missing")
             norm_path = page_dir / "layout_boxes.normalized.json"
 
@@ -210,17 +224,35 @@ def run_mineru(mcfg: MinerConfig, manifest: Path, run_dir: Path, resume: bool = 
         "--model_id",
         mcfg.model_id,
     ]
+    batch_pages_env = os.environ.get("MINERU_BATCH_PAGES", "").strip()
+    if batch_pages_env:
+        try:
+            batch_pages = int(batch_pages_env)
+        except ValueError:
+            batch_pages = 0
+        if batch_pages > 0:
+            cmd.extend(["--batch-pages", str(batch_pages)])
     if resume:
         cmd.append("--resume")
     if mcfg.max_pages and mcfg.max_pages > 0:
         cmd.extend(["--max_pages", str(mcfg.max_pages)])
 
-    result = run_cmd(cmd, log_file, timeout_sec=24 * 3600)
-
     run_meta = out_root / "run_meta.json"
-    meta_obj = read_json(run_meta) if run_meta.exists() else {}
+    normalize_only = os.environ.get("NEWSBAG_EXTERNAL_NORMALIZE_ONLY", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "y",
+    )
+    if normalize_only:
+        result = SimpleNamespace(rc=0, seconds=0.0)
+        meta_obj = read_json(run_meta) if run_meta.exists() else {}
+    else:
+        result = run_cmd(cmd, log_file, timeout_sec=24 * 3600)
+        meta_obj = read_json(run_meta) if run_meta.exists() else {}
+
     used_cuda = bool(meta_obj.get("cuda_available", False))
-    if mcfg.require_cuda and not used_cuda:
+    if (not normalize_only) and mcfg.require_cuda and not used_cuda:
         raise RuntimeError(
             "MinerU run reports cuda_available=false. This run should not be on a GPU partition."
         )
@@ -255,6 +287,9 @@ def run_mineru(mcfg: MinerConfig, manifest: Path, run_dir: Path, resume: bool = 
             row_meta = report_rows.get(slug, {})
             row_status = str(row_meta.get("status") or "")
             status_ok = row_status in ("ok", "resume")
+            if boxes_json.exists() and not status_ok:
+                # Backfill old/raw-only runs where run_report.tsv is missing or incomplete.
+                status_ok = True
             status = "ok" if status_ok and boxes_json.exists() else (row_status or "missing")
             norm_path = page_dir / "layout_boxes.normalized.json"
 

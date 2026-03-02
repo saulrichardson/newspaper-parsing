@@ -10,7 +10,7 @@
 #SBATCH -p l40s_public
 #SBATCH --gres=gpu:l40s:1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
+#SBATCH --mem=24G
 #SBATCH --time=06:00:00
 #SBATCH -J newsbag_transcribe_l40s
 #SBATCH -o /scratch/%u/paddleocr_vl15/logs/%x-%j.out
@@ -65,4 +65,3 @@ echo "[newsbag] stages=$STAGES"
 nvidia-smi
 
 "$NEWSBAG_PY" -m newsbag run --config "$CONFIG_JSON" --run-dir "$RUN_DIR" --stages "$STAGES"
-

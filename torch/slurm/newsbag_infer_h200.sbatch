@@ -10,7 +10,7 @@
 #SBATCH -p h200_public
 #SBATCH --gres=gpu:h200:1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=80G
+#SBATCH --mem=32G
 #SBATCH --time=12:00:00
 #SBATCH -J newsbag_infer_h200
 #SBATCH -o /scratch/%u/paddleocr_vl15/logs/%x-%j.out
@@ -64,6 +64,10 @@ fi
 echo "[newsbag] host=$(hostname) date=$(date)"
 echo "[newsbag] run_dir=$RUN_DIR"
 echo "[newsbag] stages=$STAGES"
+if echo ",$STAGES," | grep -q ",mineru,"; then
+  export MINERU_BATCH_PAGES="${MINERU_BATCH_PAGES:-4}"
+  echo "[newsbag] MINERU_BATCH_PAGES=$MINERU_BATCH_PAGES"
+fi
 nvidia-smi
 
 if echo ",$STAGES," | grep -qE ",paddle_layout,|,paddle_vl15,"; then

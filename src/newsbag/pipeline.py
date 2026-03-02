@@ -93,10 +93,10 @@ def run_pipeline(
         run_paddle_layout_variants(cfg, images, run_dir)
     if "paddle_vl15" in stages_to_run and cfg.paddle_vl15.enabled:
         run_paddle_vl15_docparser(cfg, cfg.paddle_vl15, images, run_dir)
-    if "dell" in stages_to_run and cfg.dell.enabled:
-        run_dell(cfg.dell, resolved_manifest, run_dir, resume=cfg.resume)
     if "mineru" in stages_to_run and cfg.mineru.enabled:
         run_mineru(cfg.mineru, resolved_manifest, run_dir, resume=cfg.resume)
+    if "dell" in stages_to_run and cfg.dell.enabled:
+        run_dell(cfg.dell, resolved_manifest, run_dir, resume=cfg.resume)
 
     fusion_root: Optional[Path] = None
     if "fusion" in stages_to_run:
@@ -152,10 +152,28 @@ def run_pipeline(
             resume=cfg.transcription.resume and cfg.resume,
         )
 
-    latest_link = cfg.run_root.expanduser().resolve() / "latest"
-    if latest_link.exists() or latest_link.is_symlink():
-        if latest_link.is_symlink() or latest_link.is_file():
-            latest_link.unlink()
-    latest_link.symlink_to(run_dir, target_is_directory=True)
+    if os.environ.get("NEWSBAG_SKIP_LATEST_LINK", "").strip().lower() not in (
+        "1",
+        "true",
+        "yes",
+        "y",
+    ):
+        latest_link = cfg.run_root.expanduser().resolve() / "latest"
+        # Best-effort update only. Concurrent shard jobs can race on this convenience symlink.
+        for _ in range(3):
+            try:
+                if latest_link.is_symlink() or latest_link.is_file():
+                    latest_link.unlink()
+                elif latest_link.exists() and latest_link.is_dir():
+                    # Preserve real directories named "latest".
+                    break
+                latest_link.symlink_to(run_dir, target_is_directory=True)
+                break
+            except FileNotFoundError:
+                # Another concurrent worker may have unlinked/replaced it.
+                continue
+            except FileExistsError:
+                # Another worker created it between checks; retry.
+                continue
 
     return run_dir

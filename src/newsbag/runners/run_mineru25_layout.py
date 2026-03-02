@@ -25,6 +25,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip pages with existing *_mineru_layout_boxes.json and *_mineru_raw.json (regenerate overlay if missing).",
     )
+    p.add_argument(
+        "--batch-pages",
+        type=int,
+        default=0,
+        help="How many pages to process per MinerU batch call. 0 chooses an automatic default.",
+    )
     return p.parse_args()
 
 
@@ -171,8 +177,50 @@ def class_color(label: str) -> Tuple[int, int, int]:
     return (40, 160, 40)
 
 
+def write_report_row(
+    wr: csv.writer,
+    fp,
+    image_path: str,
+    status: str,
+    seconds: int,
+    page_dir: Path,
+    overlay_path: Path,
+    boxes_json: Path,
+    raw_json: Path,
+    n_boxes: int,
+    model_id: str,
+) -> None:
+    wr.writerow(
+        [
+            image_path,
+            status,
+            seconds,
+            str(page_dir),
+            str(overlay_path),
+            str(boxes_json),
+            str(raw_json),
+            n_boxes,
+            model_id,
+        ]
+    )
+    # Keep progress durable for long-running jobs that may be preempted/cancelled.
+    fp.flush()
+
+
+def draw_overlay(image: Image.Image, boxes: List[Dict[str, Any]]) -> None:
+    draw = ImageDraw.Draw(image)
+    for b in boxes:
+        x1, y1, x2, y2 = b["bbox_xyxy"]
+        lbl = b["label"]
+        color = class_color(lbl)
+        draw.rectangle([x1, y1, x2, y2], outline=color, width=3)
+        draw.text((x1 + 2, max(0, y1 - 14)), str(lbl), fill=color)
+
+
 def main() -> None:
     args = parse_args()
+    batch_pages = args.batch_pages if args.batch_pages > 0 else (4 if torch.cuda.is_available() else 1)
+    batch_pages = max(1, int(batch_pages))
     out_root = Path(args.output_root)
     out_root.mkdir(parents=True, exist_ok=True)
     report_tsv = out_root / "run_report.tsv"
@@ -183,7 +231,12 @@ def main() -> None:
         device_map="auto",
     )
     processor = AutoProcessor.from_pretrained(args.model_id, use_fast=True)
-    client = MinerUClient(backend="transformers", model=model, processor=processor)
+    client = MinerUClient(
+        backend="transformers",
+        model=model,
+        processor=processor,
+        batch_size=batch_pages,
+    )
 
     run_meta = {
         "model_id": args.model_id,
@@ -220,124 +273,160 @@ def main() -> None:
             ]
         )
 
+        pending: List[Dict[str, Any]] = []
         for image_path in lines:
             t0 = time.time()
             img_path = Path(image_path)
             slug = img_path.stem
             page_dir = out_root / slug
             page_dir.mkdir(parents=True, exist_ok=True)
-
             overlay_path = page_dir / f"{slug}_mineru_overlay.png"
             boxes_json = page_dir / f"{slug}_mineru_layout_boxes.json"
             raw_json = page_dir / f"{slug}_mineru_raw.json"
-
-            status = "ok"
-            n_boxes = 0
 
             if args.resume and boxes_json.exists() and raw_json.exists():
                 try:
                     existing = json.loads(boxes_json.read_text(encoding="utf-8"))
                     existing_boxes = existing.get("boxes") or []
                     if isinstance(existing_boxes, list):
-                        n_boxes = len(existing_boxes)
                         if not overlay_path.exists():
                             image = Image.open(img_path).convert("RGB")
-                            draw = ImageDraw.Draw(image)
-                            for b in existing_boxes:
-                                bb = b.get("bbox_xyxy")
-                                if not bb or len(bb) != 4:
-                                    continue
-                                x1, y1, x2, y2 = bb
-                                lbl = str(b.get("label") or "")
-                                color = class_color(lbl)
-                                draw.rectangle([x1, y1, x2, y2], outline=color, width=3)
-                                draw.text((x1 + 2, max(0, y1 - 14)), lbl, fill=color)
+                            draw_overlay(image, existing_boxes)
                             image.save(overlay_path)
-
-                        dt = int(time.time() - t0)
-                        wr.writerow(
-                            [
-                                image_path,
-                                "resume",
-                                dt,
-                                str(page_dir),
-                                str(overlay_path),
-                                str(boxes_json),
-                                str(raw_json),
-                                n_boxes,
-                                args.model_id,
-                            ]
+                        write_report_row(
+                            wr,
+                            f,
+                            image_path=image_path,
+                            status="resume",
+                            seconds=int(time.time() - t0),
+                            page_dir=page_dir,
+                            overlay_path=overlay_path,
+                            boxes_json=boxes_json,
+                            raw_json=raw_json,
+                            n_boxes=len(existing_boxes),
+                            model_id=args.model_id,
                         )
                         continue
                 except Exception:
                     # Corrupt/partial files should be regenerated.
                     pass
-            try:
-                image = Image.open(img_path).convert("RGB")
-                extracted = client.two_step_extract(image)
-                raw_json.write_text(
-                    json.dumps(to_jsonable(extracted), ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
 
-                boxes = extract_boxes(extracted, image.width, image.height)
-                n_boxes = len(boxes)
-
-                draw = ImageDraw.Draw(image)
-                for b in boxes:
-                    x1, y1, x2, y2 = b["bbox_xyxy"]
-                    lbl = b["label"]
-                    color = class_color(lbl)
-                    draw.rectangle([x1, y1, x2, y2], outline=color, width=3)
-                    draw.text((x1 + 2, max(0, y1 - 14)), str(lbl), fill=color)
-                image.save(overlay_path)
-
-                boxes_json.write_text(
-                    json.dumps(
-                        {
-                            "slug": slug,
-                            "image": str(img_path),
-                            "model_id": args.model_id,
-                            "boxes": boxes,
-                        },
-                        ensure_ascii=False,
-                        indent=2,
-                    ),
-                    encoding="utf-8",
-                )
-            except Exception as e:  # noqa: BLE001 - keep run going across pages
-                status = f"fail:{e}"
-                boxes_json.write_text(
-                    json.dumps(
-                        {
-                            "slug": slug,
-                            "image": str(img_path),
-                            "model_id": args.model_id,
-                            "error": str(e),
-                        },
-                        ensure_ascii=False,
-                        indent=2,
-                    ),
-                    encoding="utf-8",
-                )
-            finally:
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-
-            dt = int(time.time() - t0)
-            wr.writerow(
-                [
-                    image_path,
-                    status,
-                    dt,
-                    str(page_dir),
-                    str(overlay_path),
-                    str(boxes_json),
-                    str(raw_json),
-                    n_boxes,
-                    args.model_id,
-                ]
+            pending.append(
+                {
+                    "image_path": image_path,
+                    "img_path": img_path,
+                    "slug": slug,
+                    "page_dir": page_dir,
+                    "overlay_path": overlay_path,
+                    "boxes_json": boxes_json,
+                    "raw_json": raw_json,
+                    "t0": t0,
+                }
             )
+
+        for i in range(0, len(pending), batch_pages):
+            chunk = pending[i : i + batch_pages]
+            loaded: List[Tuple[Dict[str, Any], Image.Image]] = []
+
+            for item in chunk:
+                try:
+                    img = Image.open(item["img_path"]).convert("RGB")
+                    loaded.append((item, img))
+                except Exception as e:  # noqa: BLE001 - keep run going across pages
+                    item["boxes_json"].write_text(
+                        json.dumps(
+                            {
+                                "slug": item["slug"],
+                                "image": str(item["img_path"]),
+                                "model_id": args.model_id,
+                                "error": str(e),
+                            },
+                            ensure_ascii=False,
+                            indent=2,
+                        ),
+                        encoding="utf-8",
+                    )
+                    write_report_row(
+                        wr,
+                        f,
+                        image_path=item["image_path"],
+                        status=f"fail:{e}",
+                        seconds=int(time.time() - item["t0"]),
+                        page_dir=item["page_dir"],
+                        overlay_path=item["overlay_path"],
+                        boxes_json=item["boxes_json"],
+                        raw_json=item["raw_json"],
+                        n_boxes=0,
+                        model_id=args.model_id,
+                    )
+
+            if not loaded:
+                continue
+
+            try:
+                extracted_batch = client.batch_two_step_extract([img for _, img in loaded])
+            except Exception:
+                extracted_batch = []
+                for _, img in loaded:
+                    extracted_batch.append(client.two_step_extract(img))
+
+            for (item, image), extracted in zip(loaded, extracted_batch):
+                status = "ok"
+                n_boxes = 0
+                try:
+                    item["raw_json"].write_text(
+                        json.dumps(to_jsonable(extracted), ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                    boxes = extract_boxes(extracted, image.width, image.height)
+                    n_boxes = len(boxes)
+                    draw_overlay(image, boxes)
+                    image.save(item["overlay_path"])
+                    item["boxes_json"].write_text(
+                        json.dumps(
+                            {
+                                "slug": item["slug"],
+                                "image": str(item["img_path"]),
+                                "model_id": args.model_id,
+                                "boxes": boxes,
+                            },
+                            ensure_ascii=False,
+                            indent=2,
+                        ),
+                        encoding="utf-8",
+                    )
+                except Exception as e:  # noqa: BLE001 - keep run going across pages
+                    status = f"fail:{e}"
+                    item["boxes_json"].write_text(
+                        json.dumps(
+                            {
+                                "slug": item["slug"],
+                                "image": str(item["img_path"]),
+                                "model_id": args.model_id,
+                                "error": str(e),
+                            },
+                            ensure_ascii=False,
+                            indent=2,
+                        ),
+                        encoding="utf-8",
+                    )
+
+                write_report_row(
+                    wr,
+                    f,
+                    image_path=item["image_path"],
+                    status=status,
+                    seconds=int(time.time() - item["t0"]),
+                    page_dir=item["page_dir"],
+                    overlay_path=item["overlay_path"],
+                    boxes_json=item["boxes_json"],
+                    raw_json=item["raw_json"],
+                    n_boxes=n_boxes,
+                    model_id=args.model_id,
+                )
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@
 #SBATCH -A torch_pr_609_general
 #SBATCH -p cs
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
+#SBATCH --mem=16G
 #SBATCH --time=06:00:00
 #SBATCH -J newsbag_fuse_review
 #SBATCH -o /scratch/%u/paddleocr_vl15/logs/%x-%j.out
