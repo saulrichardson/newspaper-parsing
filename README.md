@@ -1,186 +1,65 @@
 # newspaper-parsing
 
-Corpus-scale newspaper page parsing: run multiple layout parsers over large PNG/TIFF/JPG collections, fuse their outputs, generate visual review artifacts, and produce reading-order transcripts from fused regions.
+Corpus-scale newspaper page parsing for scanned page images. The system runs several layout parsers over the same page, normalizes their outputs into one box schema, fuses them into cleaner page structure, generates review artifacts, and produces reading-order transcripts from fused regions.
 
-## Scope
+## What The System Produces
 
-This project turns raw newspaper page images into structured parsing artifacts:
+- per-model normalized layout outputs
+- fused page layouts with model provenance
+- review boards for quality control
+- region-aligned OCR and ordered page transcripts
+- corpus-level variant and source rankings
 
-- normalized per-model layout outputs
-- fused page layouts with source provenance
-- visual review bundles for quality control
-- OCR/transcription outputs aligned to fused regions
-- corpus-level tables ready for downstream analysis
+## Technical Overview
 
-Project boundary:
+```mermaid
+flowchart LR
+  A["Input page images<br/>PNG / JPG / TIFF"] --> B["Parser bag"]
 
-- this repo owns ingestion, parser execution, normalization, fusion, review, transcription, and corpus exports
-- downstream analysis belongs in a separate analysis repo
-- prompt benchmarking, ordinance extraction, and gateway-backed LLM experiments belong under `experiments/` here or in a separate repo
+  subgraph B["Parser bag"]
+    B1["Paddle layout detectors<br/>PP-DocLayoutV2<br/>PP-DocLayoutV3<br/>PP-DocLayout_plus-L"]
+    B2["Paddle doc_parser v1.5<br/>layout stream + semantic blocks"]
+    B3["Dell American Stories<br/>layout parser"]
+    B4["MinerU2.5<br/>layout parser"]
+  end
 
-## Active Stack
+  B --> C["Normalize all outputs<br/>shared labels + shared box schema"]
 
-Active parsing stack:
+  C --> D["Per-page fusion preparation<br/>choose best single Paddle variant<br/>build Paddle union4<br/>derive consensus pseudo-lines<br/>build base recall mask"]
+
+  D --> E["Fusion variants<br/>S1 best Paddle single<br/>S2 Dell only<br/>S3 MinerU only<br/>P1 Paddle union4<br/>P2 union4 + Dell<br/>P3 union4 + MinerU<br/>P4 union4 + Dell + MinerU"]
+
+  E --> F["Denoise + dedupe<br/>drop weak giant strips<br/>require cross-source support for large text blocks<br/>recover uncovered lines with synthetic boxes<br/>assign page reading order"]
+
+  F --> G["Score variants<br/>base recall ratio<br/>line coverage ratio<br/>text area ratio<br/>box count"]
+
+  G --> H["Recommended fused layout"]
+  H --> I["Review boards<br/>source overlays<br/>fused overlay<br/>MinerU delta board"]
+
+  H --> J["ROI-first OCR preparation<br/>keep fused text/title regions<br/>dedupe nested overlaps<br/>select compact OCR boxes"]
+
+  J --> K["PaddleOCR crop OCR<br/>run OCR on fused crops"]
+  K --> L["Remap OCR lines to page coordinates<br/>apply overlap threshold to each target region"]
+  L --> M["Assign lines back to fused boxes<br/>emit ordered page transcript"]
+```
+
+## Models Used
+
+### Layout models
 
 - Paddle layout detectors: `PP-DocLayoutV2`, `PP-DocLayoutV3`, `PP-DocLayout_plus-L`
-- Paddle VL parser: `doc_parser v1.5`
-- Dell American Stories layout parser
-- MinerU2.5 layout parser
-- fusion, review, and fused-region transcription
+- Paddle semantic/layout parser: `doc_parser v1.5`
+- External layout parsers: Dell American Stories layout parser, MinerU2.5
 
-## System At A Glance
+### OCR model
 
-```mermaid
-flowchart LR
-  A["Raw page corpus<br/>PNG / JPG / TIFF"] --> B["Stage inputs<br/>canonical manifest"]
-  B --> C["Shard corpus<br/>balanced manifests"]
-  C --> D["Run parser bag on each shard"]
-  D --> E["Normalize source outputs"]
-  E --> F["Fuse layouts across models"]
-  F --> G["Generate review bundles"]
-  F --> H["OCR fused regions"]
-  G --> I["Quality control"]
-  H --> J["Page transcripts"]
-  I --> K["Corpus-level exports"]
-  J --> K
-```
+- PaddleOCR, invoked through the `ocr` pipeline on cropped fused regions
 
-The project is a parser bagging system optimized for recall, inspection, and reproducible reruns.
+The OCR stage uses the fused layout as the spatial prior. OCR runs on selected page regions.
 
-## Large-Corpus Operating Model
+## Shared Box Representation
 
-Use the corpus as a first-class object.
-
-```mermaid
-flowchart TB
-  subgraph Corpus["Corpus"]
-    A["inputs/"] --> B["manifest.txt"]
-    B --> C["shards/shard_000.txt"]
-    B --> D["shards/shard_001.txt"]
-    B --> E["shards/shard_NNN.txt"]
-  end
-
-  subgraph Execution["Execution"]
-    C --> R1["run: shard_000"]
-    D --> R2["run: shard_001"]
-    E --> R3["run: shard_NNN"]
-  end
-
-  subgraph Outputs["Aggregated outputs"]
-    R1 --> X["merged leaderboards"]
-    R2 --> X
-    R3 --> X
-    R1 --> Y["merged transcripts"]
-    R2 --> Y
-    R3 --> Y
-    R1 --> Z["QC packs / summaries"]
-    R2 --> Z
-    R3 --> Z
-  end
-```
-
-Corpus-scale execution has three levels:
-
-- corpus level: stage, shard, merge, export
-- shard level: run one manifest through selected stages
-- page level: inspect and reprocess failures
-
-## Target Architecture
-
-The production pipeline uses stages with a shared artifact contract.
-
-```mermaid
-flowchart LR
-  subgraph GPU["GPU-heavy stages"]
-    A["Paddle layout x3"]
-    B["Paddle VL1.5"]
-    C["Dell"]
-    D["MinerU"]
-  end
-
-  subgraph CPU["CPU / aggregation stages"]
-    E["Normalization"]
-    F["Fusion"]
-    G["Review boards"]
-    H["Status / reporting"]
-    I["Corpus merges / exports"]
-  end
-
-  subgraph OCR["OCR stage"]
-    J["Fused-region OCR"]
-  end
-
-  A --> E
-  B --> E
-  C --> E
-  D --> E
-  E --> F
-  F --> G
-  F --> J
-  G --> H
-  J --> I
-  H --> I
-```
-
-### Core principles
-
-- Production package: `newsbag`
-- Operational CLI: `newsbag ...`
-- Shared run contract
-- Shared stage and variant registry
-- Manifest-driven execution
-- Fail-fast stage behavior
-
-## How One Run Actually Works
-
-One run has a concrete internal artifact flow:
-
-```mermaid
-flowchart LR
-  M["manifest.txt"] --> P["run_pipeline<br/>create run_dir + resolved manifest + resolved config"]
-
-  P --> PL["paddle_layout<br/>3 layout detectors"]
-  P --> PV["paddle_vl15<br/>layout + semantic blocks"]
-  P --> DE["dell"]
-  P --> MI["mineru"]
-
-  PL --> PLN["outputs/sources/paddle_layout/<variant>/<slug>/layout_boxes.normalized.json"]
-  PV --> PVN["outputs/sources/paddle_vl15/<variant>/<slug>/layout_boxes.normalized.json<br/>+ parsing_blocks.json"]
-  DE --> DEN["outputs/sources/dell/<variant>/<slug>/layout_boxes.normalized.json"]
-  MI --> MIN["outputs/sources/mineru/<variant>/<slug>/layout_boxes.normalized.json"]
-
-  PLN --> FU["fusion<br/>build variants + metrics + summary"]
-  PVN --> FU
-  DEN --> FU
-  MIN --> FU
-
-  FU --> FS["outputs/fusion/summary.json<br/>variant_leaderboard.tsv<br/>source_leaderboard.tsv"]
-  FU --> FV["outputs/fusion/<variant>/<slug>/fused_boxes.json"]
-
-  FS --> RV["review<br/>pages/ + top20 packs"]
-  FV --> TR["transcription<br/>select OCR boxes -> crop -> OCR -> remap -> assign"]
-  TR --> TO["outputs/transcription/<variant>/<slug>/transcript.txt"]
-```
-
-### 1. Run bootstrap
-
-Before model execution, the pipeline:
-
-- reads and validates every path in the manifest
-- creates a run root with `manifests/`, `logs/`, `reports/`, `outputs/`, and `review/`
-- writes `manifests/images.resolved.txt`
-- writes `manifests/config.resolved.json`
-
-### 2. Source runners and normalization
-
-Every parser stage writes raw outputs and then rewrites them into one normalized box schema.
-
-- `paddle_layout` runs three layout detectors and writes raw Paddle outputs plus `layout_boxes.normalized.json`
-- `paddle_vl15` writes both normalized layout boxes and the full `parsing_blocks.json` semantic payload
-- `dell` and `mineru` run as external stages, then normalize their raw boxes into the same schema as Paddle
-- each source family also writes label histograms so you can inspect raw-vs-normalized label distributions at run level
-
-Shared normalized box contract:
+Every model output is rewritten into the same normalized box structure before fusion starts.
 
 ```json
 {
@@ -195,266 +74,173 @@ Shared normalized box contract:
 }
 ```
 
-Fusion, review, and transcription consume normalized boxes only.
+That shared structure is the core contract between parser execution, fusion, review, and transcription.
 
-### 3. Fusion internals
+## Fusion Method
 
-Fusion builds variants, denoises boxes, and scores results.
+Fusion works page by page.
 
-For each page, the current implementation does this:
+### Step 1: Build source sets
 
-- loads normalized boxes from each Paddle variant, Dell, and MinerU
-- selects the best single Paddle variant for the page
-- forms the Paddle union across the three layout detectors plus VL1.5
-- derives consensus pseudo-lines from text/title-like boxes across all sources
-- builds a base raster mask from consensus-worthy candidates
-- evaluates seven named fusion variants: `S1_paddle_best_single`, `S2_dell_only`, `S3_mineru_only`, `P1_paddle_union4`, `P2_paddle_union4_plus_dell`, `P3_paddle_union4_plus_mineru`, `P4_paddle_union4_plus_dell_plus_mineru`
-- dedupes and denoises candidate boxes before scoring them
+For each page, the system loads:
 
-Denoising suppresses giant unsupported text strips and can replace weak giant boxes with smaller synthetic recovery boxes around uncovered pseudo-lines. This keeps recall high while limiting noisy boxes.
+- each Paddle layout variant
+- Paddle doc_parser v1.5 layout boxes
+- Dell boxes
+- MinerU boxes
 
-Each variant is scored with metrics written per page and aggregated at run level:
+The Paddle family is then represented in two ways:
+
+- the best single Paddle variant for the page
+- the union of all four Paddle sources: three layout detectors plus doc_parser v1.5
+
+### Step 2: Build consensus structure
+
+The system derives pseudo-lines from text-like regions across all sources. These pseudo-lines act as a page-level consensus proxy for text coverage.
+
+Pseudo-line construction filters out obvious noise:
+
+- degenerate boxes
+- very large text-like boxes
+- extreme full-width or full-height strips
+- near-duplicate line candidates
+
+The system also builds a base recall mask from plausible text regions. This mask is used to score fused variants against a cleaner proxy than raw source boxes.
+
+### Step 3: Evaluate fusion variants
+
+The system evaluates seven fusion variants:
+
+- `S1_paddle_best_single`
+- `S2_dell_only`
+- `S3_mineru_only`
+- `P1_paddle_union4`
+- `P2_paddle_union4_plus_dell`
+- `P3_paddle_union4_plus_mineru`
+- `P4_paddle_union4_plus_dell_plus_mineru`
+
+Each variant is run through the same deduplication and denoising logic before scoring.
+
+## Overlap Handling And Layout Cleanup
+
+The quality of the final layout comes from the overlap logic and the cleanup rules.
+
+### Cross-source support for large text regions
+
+Large text-like boxes are treated more strictly than ordinary boxes.
+
+The system measures whether a large candidate is supported by multiple source families. Support comes from overlap relationships across Paddle, Dell, and MinerU boxes.
+
+Large weakly supported regions are filtered aggressively because they are the main source of:
+
+- giant page-spanning strips
+- oversized article blocks
+- OCR confusion
+- broken reading order
+
+### Pseudo-line coverage gating
+
+Large text regions must cover consensus pseudo-lines in a meaningful way. The system checks:
+
+- how many pseudo-lines fall inside the candidate
+- how many of those lines are still uncovered by already selected boxes
+
+This keeps boxes that add text coverage and removes boxes that mostly add bulk.
+
+### Synthetic recovery boxes
+
+When a large weakly supported text block still contains useful uncovered line structure, the system can replace that block with smaller synthetic recovery boxes built around the uncovered pseudo-lines.
+
+This is one of the main cleanup mechanisms. It preserves recall while avoiding huge noisy regions that damage OCR and reading order.
+
+### Final fused ordering
+
+After selection, fused boxes are sorted top-to-bottom and left-to-right, then assigned page reading order. That reading order is reused downstream by the transcription stage.
+
+## Variant Scoring
+
+Each fused variant is scored with:
 
 - `base_recall_ratio`
 - `line_coverage_ratio`
 - `text_area_ratio`
 - `box_count`
 
-Run summary records:
+These metrics balance recall, page coverage, and structural compactness.
+
+The run summary records:
 
 - `best_variant_by_score`
 - `recommended_variant`
 
-Recommendation uses the configured preferred variant when present. Otherwise it falls back to the best-scoring variant.
+The configured preferred variant is used when it is present in the leaderboard. Otherwise the best-scoring variant becomes the recommendation.
 
-### 4. Review internals
+## OCR And Transcript Construction
 
-Review writes page-level QA artifacts.
+The transcription stage is ROI-first and layout-driven.
 
-For each rendered page, the review bundle writes:
+### OCR region selection
 
-- the original page
-- each Paddle source overlay
-- a dedicated Paddle-only comparison board
-- Dell and MinerU overlays
-- the recommended fused overlay
-- an explicit `P2` vs `P4` board showing the effect of adding MinerU
+The stage starts from the recommended fused layout and keeps selected labels, usually:
 
-There are two review modes:
+- `text`
+- `title`
 
-- `all`: render every page
-- `top20`: render only the most informative pages and the strongest MinerU-delta pages
+Those fused regions are then deduplicated again for OCR.
 
-### 5. Transcription internals
+The OCR-region selector uses different overlap settings for titles and text:
 
-Transcription is ROI-first.
+- titles prefer smaller distinct boxes
+- text prefers larger container boxes
 
-For the selected fused variant, the stage:
+The result is a compact set of OCR regions with less nesting and less duplicate coverage.
 
-- loads fused boxes for the page
-- keeps only configured labels, usually `text` and `title`
-- dedupes those fused boxes down to compact OCR regions
-- crops each OCR region out of the original page
-- runs Paddle OCR over the crop directory
-- parses crop-level OCR lines
-- translates each OCR line back into page coordinates
-- assigns remapped OCR lines back into the fused reading-order boxes
-- writes `transcript_boxes.json`, `transcript.txt`, and `transcript_combined.txt`
+### Crop OCR
 
-Key transcription design choices:
+Each OCR region is cropped from the original page image and sent through PaddleOCR.
 
-- fusion decides where OCR should happen
-- OCR runs on cropped fused regions
-- transcript text follows fused region order
+This stage applies OCR to cleaner text/title regions already selected by fusion.
 
-### 6. Stage dependency model
+### Remapping and overlap filtering
 
-Stage dependency model:
+OCR lines returned from each crop are translated back into page coordinates.
 
-- `paddle_layout`, `paddle_vl15`, `dell`, and `mineru` can run independently from the same manifest
-- `fusion` depends on normalized source outputs
-- `review` and `transcription` depend on `outputs/fusion/summary.json`
-- `review` and `transcription` rerun from existing fusion outputs when `outputs/fusion/summary.json` already exists
+Each translated line is checked against the fused target region with a minimum overlap threshold. Low-overlap lines are rejected.
 
-This partial rerun model separates expensive GPU inference from downstream inspection and OCR work.
+This line-to-region overlap filter is the second major cleanup mechanism after fusion.
 
-## Target Repo Layout
+### Final transcript assembly
 
-Organize the repo by responsibility.
+Accepted OCR lines are assigned back to the fused boxes that generated their crops. Box text is assembled from those lines, and the final page transcript follows fused reading order.
 
-```text
-newspaper-parsing/
-  src/newsbag/
-    cli/
-      main.py
-      stage_inputs.py
-      run.py
-      status.py
-      merge.py
-      export.py
-    core/
-      config.py
-      labels.py
-      manifest.py
-      paths.py
-      io.py
-      proc.py
-      variants.py
-    stages/
-      paddle_layout.py
-      paddle_vl15.py
-      dell.py
-      mineru.py
-      fusion/
-        geometry.py
-        heuristics.py
-        metrics.py
-        stage.py
-      review/
-        ranking.py
-        boards.py
-        stage.py
-      transcription/
-        ocr.py
-        assignment.py
-        render.py
-        stage.py
-  configs/
-  ops/
-    torch/
-      slurm/
-      submit/
-  experiments/
-    ordinance_llm/
-      prompts/
-      scripts/
-      reference/
-  docs/
-  tests/
-    unit/
-    integration/
-  third_party/
-    agent-gateway/
-```
+This yields transcripts aligned to the cleaned fused layout and fused reading order.
 
-### Why this shape works
+## Review Method
 
-- `src/newsbag/` stays focused on the production parser bagging pipeline
-- `ops/torch/` isolates cluster-specific submission logic from the parsing code
-- `experiments/` keeps downstream prompt work separate from production entrypoints
-- `third_party/` makes vendored dependencies obvious and keeps them out of the mental model of the parsing package
-- `core/variants.py` becomes the single place to define fusion variants and stage IDs
+The system produces visual review artifacts directly from the same fused and source layouts used by the pipeline.
 
-## Target CLI Surface
+Review output includes:
 
-CLI surface:
+- original page
+- individual Paddle overlays
+- a Paddle-only board
+- Dell overlay
+- MinerU overlay
+- recommended fused overlay
+- a direct `P2` vs `P4` comparison to show MinerU contribution
 
-```bash
-newsbag stage-inputs
-newsbag shard-manifest
-newsbag run
-newsbag status
-newsbag merge-runs
-newsbag export
-```
+These review artifacts make the fusion decision auditable at page level.
 
-Each command should have one clear job:
+## Large-Corpus Use
 
-- `stage-inputs`: normalize file, directory, archive, and manifest inputs into a canonical image manifest
-- `shard-manifest`: split a corpus manifest into balanced shard manifests
-- `run`: execute one shard or one manifest through selected stages
-- `status`: summarize progress and missing artifacts for a run or corpus
-- `merge-runs`: combine shard outputs into corpus-level outputs
-- `export`: emit downstream-friendly datasets and summary tables
+The system is designed for large corpora of page images.
 
-This abstraction fits large PNG corpora. Raw helper scripts can remain as thin wrappers over package code or ops tooling.
+The practical execution pattern is:
 
-## Desired Artifact Contract
+- stage inputs into a canonical manifest
+- shard the corpus into balanced manifests
+- run the parser bag on each shard
+- aggregate fusion rankings and transcripts across shards
+- inspect a focused review subset plus targeted failure cases
 
-The pipeline produces predictable, composable outputs.
-
-### Corpus-level
-
-```text
-corpora/<corpus_name>/
-  manifest.txt
-  shards/
-    shard_000.txt
-    shard_001.txt
-  aggregates/
-    variant_leaderboard.tsv
-    source_leaderboard.tsv
-    transcripts_combined.txt
-    qc_summary.json
-```
-
-### Run-level
-
-```text
-runs/<corpus_name>/<shard_name>/
-  manifests/
-  logs/
-  reports/
-  outputs/
-    sources/
-    fusion/
-    transcription/
-  review/
-```
-
-### Page-level
-
-Page-level artifacts:
-
-- source model normalized boxes
-- fused boxes and metrics
-- review overlays and comparison boards
-- OCR raw output
-- transcript box assignments
-- final transcript text
-
-## Large-Corpus Priorities
-
-Critical capabilities:
-
-1. Canonical manifest staging from mixed inputs.
-2. Manifest sharding as a first-class operation.
-3. Reproducible run directories with resolved configs saved inside them.
-4. Stage-selective reruns that preserve artifact contracts.
-5. Corpus-level merge/export commands so shard outputs become one coherent dataset.
-6. Clear status reporting for partial failures and missing pages.
-
-These six capabilities keep large-corpus execution reproducible and operable.
-
-## Current Assets
-
-Current assets:
-
-- manifest-based execution
-- separate parser runners
-- explicit fusion variants
-- review bundle generation
-- fused-region transcription
-- Torch-oriented split GPU execution
-
-Refactor around these assets. Keep the production path obvious and keep experiment-specific code out of the critical path.
-
-## Near-Term Refactor Priorities
-
-The highest-value cleanup sequence is:
-
-1. Consolidate all primary entrypoints under `newsbag`.
-2. Extract shared path and variant registries into `src/newsbag/core/`.
-3. Split large stage modules into stage packages with smaller files.
-4. Move ordinance / LLM experiment code under `experiments/ordinance_llm/`.
-5. Move cluster scripts under `ops/torch/`.
-6. Add corpus-level merge and export commands.
-
-## Related Docs
-
-- [`docs/output_layout.md`](docs/output_layout.md): current run artifact layout
-- [`docs/torch_hpc.md`](docs/torch_hpc.md): Torch cluster operating guidance
-
-## Current Status
-
-The repository already runs the full parser bagging flow. The remaining work is to make the architecture explicit in code and docs so the system scales cleanly to very large newspaper corpora.
+This execution model keeps model inference, fusion, review, and transcription composable across large collections.
