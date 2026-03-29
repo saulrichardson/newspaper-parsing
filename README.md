@@ -2,11 +2,9 @@
 
 Corpus-scale newspaper page parsing: run multiple layout parsers over large PNG/TIFF/JPG collections, fuse their outputs, generate visual review artifacts, and produce reading-order transcripts from fused regions.
 
-This README describes the project as it should be organized and operated going forward. The main goal is a clean production pipeline for large page corpora, with clear boundaries between core parsing, cluster operations, and downstream experiments.
+## Scope
 
-## What This Project Is
-
-This project should be the production system for turning raw newspaper page images into structured parsing artifacts:
+This project turns raw newspaper page images into structured parsing artifacts:
 
 - normalized per-model layout outputs
 - fused page layouts with source provenance
@@ -14,23 +12,21 @@ This project should be the production system for turning raw newspaper page imag
 - OCR/transcription outputs aligned to fused regions
 - corpus-level tables ready for downstream analysis
 
-The active parsing stack today is:
+Project boundary:
+
+- this repo owns ingestion, parser execution, normalization, fusion, review, transcription, and corpus exports
+- downstream analysis belongs in a separate analysis repo
+- prompt benchmarking, ordinance extraction, and gateway-backed LLM experiments belong under `experiments/` here or in a separate repo
+
+## Active Stack
+
+Active parsing stack:
 
 - Paddle layout detectors: `PP-DocLayoutV2`, `PP-DocLayoutV3`, `PP-DocLayout_plus-L`
 - Paddle VL parser: `doc_parser v1.5`
 - Dell American Stories layout parser
 - MinerU2.5 layout parser
 - fusion, review, and fused-region transcription
-
-## What This Project Should Not Be
-
-This repo should not be the dumping ground for every downstream newspaper workflow.
-
-The intended boundary is:
-
-- this repo owns ingestion, parser execution, normalization, fusion, review, transcription, and corpus exports
-- downstream analysis belongs in a separate analysis repo
-- prompt benchmarking, ordinance extraction, and gateway-backed LLM experiments belong under `experiments/` here or in a separate repo entirely
 
 ## System At A Glance
 
@@ -49,11 +45,11 @@ flowchart LR
   J --> K
 ```
 
-The important design choice is that the project is not "one parser." It is a bagged parsing system optimized for recall, inspection, and reproducible reruns.
+The project is a parser bagging system optimized for recall, inspection, and reproducible reruns.
 
 ## Large-Corpus Operating Model
 
-This project should treat a large corpus as a first-class object, not just a folder passed to an ad hoc script.
+Use the corpus as a first-class object.
 
 ```mermaid
 flowchart TB
@@ -83,15 +79,15 @@ flowchart TB
   end
 ```
 
-For corpus-scale work, the project should support three levels of execution cleanly:
+Corpus-scale execution has three levels:
 
 - corpus level: stage, shard, merge, export
 - shard level: run one manifest through selected stages
-- page level: inspect or reprocess failures without rerunning the world
+- page level: inspect and reprocess failures
 
 ## Target Architecture
 
-The production pipeline should be organized around stages with a single shared artifact contract.
+The production pipeline uses stages with a shared artifact contract.
 
 ```mermaid
 flowchart LR
@@ -128,12 +124,12 @@ flowchart LR
 
 ### Core principles
 
-- One production package: `newsbag`
-- One operational CLI: all primary workflows should be reachable through `newsbag ...`
-- One run contract: every stage writes predictable outputs under a run root
-- One source of truth for variant IDs, artifact paths, and stage names
-- Shard-friendly execution: every stage should work on a manifest, not on implicit directory scans
-- Fast failure: empty external outputs, missing inputs, and broken configs should fail loudly
+- Production package: `newsbag`
+- Operational CLI: `newsbag ...`
+- Shared run contract
+- Shared stage and variant registry
+- Manifest-driven execution
+- Fail-fast stage behavior
 
 ## How One Run Actually Works
 
@@ -168,14 +164,12 @@ flowchart LR
 
 ### 1. Run bootstrap
 
-Before any model runs, the pipeline:
+Before model execution, the pipeline:
 
 - reads and validates every path in the manifest
 - creates a run root with `manifests/`, `logs/`, `reports/`, `outputs/`, and `review/`
 - writes `manifests/images.resolved.txt`
 - writes `manifests/config.resolved.json`
-
-That matters for corpus work because every shard run becomes reproducible and self-describing.
 
 ### 2. Source runners and normalization
 
@@ -186,7 +180,7 @@ Every parser stage writes raw outputs and then rewrites them into one normalized
 - `dell` and `mineru` run as external stages, then normalize their raw boxes into the same schema as Paddle
 - each source family also writes label histograms so you can inspect raw-vs-normalized label distributions at run level
 
-The shared normalized box contract is the hinge point of the whole project:
+Shared normalized box contract:
 
 ```json
 {
@@ -201,11 +195,11 @@ The shared normalized box contract is the hinge point of the whole project:
 }
 ```
 
-That common schema is what makes bagging possible. Fusion, review, and transcription should only consume normalized boxes, never parser-specific raw payloads.
+Fusion, review, and transcription consume normalized boxes only.
 
 ### 3. Fusion internals
 
-Fusion is not just "union all boxes."
+Fusion builds variants, denoises boxes, and scores results.
 
 For each page, the current implementation does this:
 
@@ -214,17 +208,10 @@ For each page, the current implementation does this:
 - forms the Paddle union across the three layout detectors plus VL1.5
 - derives consensus pseudo-lines from text/title-like boxes across all sources
 - builds a base raster mask from consensus-worthy candidates
-- evaluates seven named fusion variants:
-  - `S1_paddle_best_single`
-  - `S2_dell_only`
-  - `S3_mineru_only`
-  - `P1_paddle_union4`
-  - `P2_paddle_union4_plus_dell`
-  - `P3_paddle_union4_plus_mineru`
-  - `P4_paddle_union4_plus_dell_plus_mineru`
+- evaluates seven named fusion variants: `S1_paddle_best_single`, `S2_dell_only`, `S3_mineru_only`, `P1_paddle_union4`, `P2_paddle_union4_plus_dell`, `P3_paddle_union4_plus_mineru`, `P4_paddle_union4_plus_dell_plus_mineru`
 - dedupes and denoises candidate boxes before scoring them
 
-The denoising step is important. It is where the pipeline suppresses giant unsupported text strips and, when needed, replaces weak giant boxes with smaller synthetic recovery boxes around uncovered pseudo-lines. This is why the system can preserve recall without letting a single noisy parser dominate the output.
+Denoising suppresses giant unsupported text strips and can replace weak giant boxes with smaller synthetic recovery boxes around uncovered pseudo-lines. This keeps recall high while limiting noisy boxes.
 
 Each variant is scored with metrics written per page and aggregated at run level:
 
@@ -233,19 +220,16 @@ Each variant is scored with metrics written per page and aggregated at run level
 - `text_area_ratio`
 - `box_count`
 
-The run summary keeps both:
+Run summary records:
 
 - `best_variant_by_score`
 - `recommended_variant`
 
-The intended behavior is:
-
-- prefer the configured recommended variant when it exists
-- otherwise fall back to the empirically best-scoring variant for that run
+Recommendation uses the configured preferred variant when present. Otherwise it falls back to the best-scoring variant.
 
 ### 4. Review internals
 
-Review is a real stage, not just a screenshot helper.
+Review writes page-level QA artifacts.
 
 For each rendered page, the review bundle writes:
 
@@ -261,14 +245,9 @@ There are two review modes:
 - `all`: render every page
 - `top20`: render only the most informative pages and the strongest MinerU-delta pages
 
-That lets the same project support both:
-
-- exhaustive review on smaller runs
-- selective quality control on large shard runs
-
 ### 5. Transcription internals
 
-Transcription is ROI-first, not full-page OCR.
+Transcription is ROI-first.
 
 For the selected fused variant, the stage:
 
@@ -282,28 +261,26 @@ For the selected fused variant, the stage:
 - assigns remapped OCR lines back into the fused reading-order boxes
 - writes `transcript_boxes.json`, `transcript.txt`, and `transcript_combined.txt`
 
-That is the key inner design choice on the transcription side:
+Key transcription design choices:
 
 - fusion decides where OCR should happen
-- OCR happens on cropped regions, not on full pages
-- final transcript text is emitted in fused region order, not in raw OCR order
-
-This is what makes the transcripts align with the fused layout structure instead of becoming one more noisy parser output.
+- OCR runs on cropped fused regions
+- transcript text follows fused region order
 
 ### 6. Stage dependency model
 
-The stage dependency model should stay explicit:
+Stage dependency model:
 
 - `paddle_layout`, `paddle_vl15`, `dell`, and `mineru` can run independently from the same manifest
 - `fusion` depends on normalized source outputs
 - `review` and `transcription` depend on `outputs/fusion/summary.json`
-- `review` and `transcription` can be rerun without rerunning model inference, as long as fusion outputs already exist
+- `review` and `transcription` rerun from existing fusion outputs when `outputs/fusion/summary.json` already exists
 
-That partial rerun model is one of the most valuable pieces of the project for large corpora, because it separates expensive GPU inference from downstream inspection and OCR work.
+This partial rerun model separates expensive GPU inference from downstream inspection and OCR work.
 
 ## Target Repo Layout
 
-The repo should be organized by responsibility, not by historical script accumulation.
+Organize the repo by responsibility.
 
 ```text
 newspaper-parsing/
@@ -360,17 +337,17 @@ newspaper-parsing/
     agent-gateway/
 ```
 
-### Why this shape is better
+### Why this shape works
 
 - `src/newsbag/` stays focused on the production parser bagging pipeline
 - `ops/torch/` isolates cluster-specific submission logic from the parsing code
-- `experiments/` makes downstream prompt work explicit instead of mixing it into production entrypoints
+- `experiments/` keeps downstream prompt work separate from production entrypoints
 - `third_party/` makes vendored dependencies obvious and keeps them out of the mental model of the parsing package
 - `core/variants.py` becomes the single place to define fusion variants and stage IDs
 
 ## Target CLI Surface
 
-The operational surface should be simple and complete:
+CLI surface:
 
 ```bash
 newsbag stage-inputs
@@ -390,11 +367,11 @@ Each command should have one clear job:
 - `merge-runs`: combine shard outputs into corpus-level outputs
 - `export`: emit downstream-friendly datasets and summary tables
 
-This is the correct abstraction for large PNG corpora. Raw helper scripts can still exist, but only as thin wrappers over package code or ops tooling.
+This abstraction fits large PNG corpora. Raw helper scripts can remain as thin wrappers over package code or ops tooling.
 
 ## Desired Artifact Contract
 
-The pipeline should produce predictable, composable outputs.
+The pipeline produces predictable, composable outputs.
 
 ### Corpus-level
 
@@ -427,7 +404,7 @@ runs/<corpus_name>/<shard_name>/
 
 ### Page-level
 
-Each page should be inspectable through stable, predictable artifacts:
+Page-level artifacts:
 
 - source model normalized boxes
 - fused boxes and metrics
@@ -436,22 +413,22 @@ Each page should be inspectable through stable, predictable artifacts:
 - transcript box assignments
 - final transcript text
 
-## What Matters Most For Large PNG Corpora
+## Large-Corpus Priorities
 
-If the priority is leveraging full functionality at scale, these capabilities matter most:
+Critical capabilities:
 
 1. Canonical manifest staging from mixed inputs.
 2. Manifest sharding as a first-class operation.
 3. Reproducible run directories with resolved configs saved inside them.
-4. Stage-selective reruns without breaking artifact contracts.
+4. Stage-selective reruns that preserve artifact contracts.
 5. Corpus-level merge/export commands so shard outputs become one coherent dataset.
 6. Clear status reporting for partial failures and missing pages.
 
-Without those six pieces, the project stays usable for small batches but becomes fragile for real corpora.
+These six capabilities keep large-corpus execution reproducible and operable.
 
-## What Already Exists And Should Be Preserved
+## Current Assets
 
-The current codebase already has the right core ideas:
+Current assets:
 
 - manifest-based execution
 - separate parser runners
@@ -460,7 +437,7 @@ The current codebase already has the right core ideas:
 - fused-region transcription
 - Torch-oriented split GPU execution
 
-Those are the assets to keep. The main change is organizational: make the production path obvious, and move experiment-specific code out of the critical path.
+Refactor around these assets. Keep the production path obvious and keep experiment-specific code out of the critical path.
 
 ## Near-Term Refactor Priorities
 
@@ -480,4 +457,4 @@ The highest-value cleanup sequence is:
 
 ## Current Status
 
-This repository already runs the full parser bagging flow today. The remaining work is to make the intended architecture explicit in code and docs so the whole system scales cleanly to very large newspaper corpora.
+The repository already runs the full parser bagging flow. The remaining work is to make the architecture explicit in code and docs so the system scales cleanly to very large newspaper corpora.
