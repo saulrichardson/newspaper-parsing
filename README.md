@@ -1,307 +1,317 @@
 # newspaper-parsing
 
-GPU-first newspaper layout parsing and fusion pipeline for **Paddle(4) + Dell + MinerU**.
+Corpus-scale newspaper page parsing: run multiple layout parsers over large PNG/TIFF/JPG collections, fuse their outputs, generate visual review artifacts, and produce reading-order transcripts from fused regions.
 
-This repository is intentionally scoped to one production flow:
+This README describes the project as it should be organized and operated going forward. The main goal is a clean production pipeline for large page corpora, with clear boundaries between core parsing, cluster operations, and downstream experiments.
+
+## What This Project Is
+
+This project should be the production system for turning raw newspaper page images into structured parsing artifacts:
+
+- normalized per-model layout outputs
+- fused page layouts with source provenance
+- visual review bundles for quality control
+- OCR/transcription outputs aligned to fused regions
+- corpus-level tables ready for downstream analysis
+
+The active parsing stack today is:
 
 - Paddle layout detectors: `PP-DocLayoutV2`, `PP-DocLayoutV3`, `PP-DocLayout_plus-L`
-- Paddle VL parser: `doc_parser v1.5` (`layout_det_res` + semantic blocks from `parsing_res_list`)
+- Paddle VL parser: `doc_parser v1.5`
 - Dell American Stories layout parser
 - MinerU2.5 layout parser
-- Cross-model fusion with anti-noise gating and review pack generation
-- Fused-region transcription with Paddle OCR over fused ROIs (reading-order transcript artifacts)
+- fusion, review, and fused-region transcription
 
-No other parser families are in the active path.
+## What This Project Should Not Be
 
-## Why this repo exists
+This repo should not be the dumping ground for every downstream newspaper workflow.
 
-- Run the full parser bag from a folder of newspaper PNGs/TIFFs.
-- Keep Torch usage efficient: GPU inference first, CPU fusion/review second.
-- Preserve model provenance and labels (including VL1.5 semantic/table payloads).
-- Produce visual artifacts you can inspect quickly (`review/pages`, `top20_informative`, `top20_miner_delta`).
-- Produce transcript artifacts aligned to fused regions (`outputs/transcription/...`).
+The intended boundary is:
 
-## Visual walkthrough
+- this repo owns ingestion, parser execution, normalization, fusion, review, transcription, and corpus exports
+- downstream analysis belongs in a separate analysis repo
+- prompt benchmarking, ordinance extraction, and gateway-backed LLM experiments belong under `experiments/` here or in a separate repo entirely
 
-### 1) Raw page input
-
-![Input newspaper page](docs/images/example_input.png)
-
-### 2) Full model comparison board (Paddle4 + Dell + MinerU + fused)
-
-![Full comparison board](docs/images/example_full_board.png)
-
-### 3) Noise-control impact (before vs after fusion noise guard)
-
-![Noise control comparison](docs/images/example_noise_fix.png)
-
-### 4) MinerU contribution view (without MinerU vs with MinerU)
-
-![Miner contribution comparison](docs/images/example_miner_delta.png)
-
-## High-level pipeline
+## System At A Glance
 
 ```mermaid
 flowchart LR
-  A["Input folder (PNG/JPG/TIFF)"] --> B["Manifest builder"]
-  B --> C["GPU inference jobs"]
-  C --> C1["Paddle layout x3 (L40S)"]
-  C --> C2["Paddle VL1.5 doc_parser (L40S)"]
-  C --> C3["Dell + MinerU (H200 or L40S)"]
-  C1 --> D["Normalized source outputs + label stats"]
-  C2 --> D
-  C3 --> D
-  D --> E["CPU fusion + ranking"]
-  E --> F["Review bundle + top20 packs (CPU)"]
-  F --> G["GPU transcription from fused regions"]
-  G --> H["Ship artifacts: TSVs + PNG boards + JSON + TXT"]
+  A["Raw page corpus<br/>PNG / JPG / TIFF"] --> B["Stage inputs<br/>canonical manifest"]
+  B --> C["Shard corpus<br/>balanced manifests"]
+  C --> D["Run parser bag on each shard"]
+  D --> E["Normalize source outputs"]
+  E --> F["Fuse layouts across models"]
+  F --> G["Generate review bundles"]
+  F --> H["OCR fused regions"]
+  G --> I["Quality control"]
+  H --> J["Page transcripts"]
+  I --> K["Corpus-level exports"]
+  J --> K
 ```
 
-## Repository layout
+The important design choice is that the project is not "one parser." It is a bagged parsing system optimized for recall, inspection, and reproducible reruns.
 
-- `src/newsbag/` core package (CLI, runners, fusion, review)
-- `configs/pipeline.example.json` local reference config
-- `configs/pipeline.torch.json` Torch reference config
-- `torch/slurm/` sbatch templates + submit helpers
-- `scripts/make_manifest.py` manifest generation utility
-- `scripts/stage_inputs.py` mixed-input staging utility (file/dir/manifest/archive -> manifest)
-- `scripts/monitor_torch_jobs.sh` queue monitor helper
-- `docs/output_layout.md` exact artifact contracts
-- `docs/torch_hpc.md` Torch operational guidance
+## Large-Corpus Operating Model
 
-## Quick start (local)
+This project should treat a large corpus as a first-class object, not just a folder passed to an ad hoc script.
+
+```mermaid
+flowchart TB
+  subgraph Corpus["Corpus"]
+    A["inputs/"] --> B["manifest.txt"]
+    B --> C["shards/shard_000.txt"]
+    B --> D["shards/shard_001.txt"]
+    B --> E["shards/shard_NNN.txt"]
+  end
+
+  subgraph Execution["Execution"]
+    C --> R1["run: shard_000"]
+    D --> R2["run: shard_001"]
+    E --> R3["run: shard_NNN"]
+  end
+
+  subgraph Outputs["Aggregated outputs"]
+    R1 --> X["merged leaderboards"]
+    R2 --> X
+    R3 --> X
+    R1 --> Y["merged transcripts"]
+    R2 --> Y
+    R3 --> Y
+    R1 --> Z["QC packs / summaries"]
+    R2 --> Z
+    R3 --> Z
+  end
+```
+
+For corpus-scale work, the project should support three levels of execution cleanly:
+
+- corpus level: stage, shard, merge, export
+- shard level: run one manifest through selected stages
+- page level: inspect or reprocess failures without rerunning the world
+
+## Target Architecture
+
+The production pipeline should be organized around stages with a single shared artifact contract.
+
+```mermaid
+flowchart LR
+  subgraph GPU["GPU-heavy stages"]
+    A["Paddle layout x3"]
+    B["Paddle VL1.5"]
+    C["Dell"]
+    D["MinerU"]
+  end
+
+  subgraph CPU["CPU / aggregation stages"]
+    E["Normalization"]
+    F["Fusion"]
+    G["Review boards"]
+    H["Status / reporting"]
+    I["Corpus merges / exports"]
+  end
+
+  subgraph OCR["OCR stage"]
+    J["Fused-region OCR"]
+  end
+
+  A --> E
+  B --> E
+  C --> E
+  D --> E
+  E --> F
+  F --> G
+  F --> J
+  G --> H
+  J --> I
+  H --> I
+```
+
+### Core principles
+
+- One production package: `newsbag`
+- One operational CLI: all primary workflows should be reachable through `newsbag ...`
+- One run contract: every stage writes predictable outputs under a run root
+- One source of truth for variant IDs, artifact paths, and stage names
+- Shard-friendly execution: every stage should work on a manifest, not on implicit directory scans
+- Fast failure: empty external outputs, missing inputs, and broken configs should fail loudly
+
+## Target Repo Layout
+
+The repo should be organized by responsibility, not by historical script accumulation.
+
+```text
+newspaper-parsing/
+  src/newsbag/
+    cli/
+      main.py
+      stage_inputs.py
+      run.py
+      status.py
+      merge.py
+      export.py
+    core/
+      config.py
+      labels.py
+      manifest.py
+      paths.py
+      io.py
+      proc.py
+      variants.py
+    stages/
+      paddle_layout.py
+      paddle_vl15.py
+      dell.py
+      mineru.py
+      fusion/
+        geometry.py
+        heuristics.py
+        metrics.py
+        stage.py
+      review/
+        ranking.py
+        boards.py
+        stage.py
+      transcription/
+        ocr.py
+        assignment.py
+        render.py
+        stage.py
+  configs/
+  ops/
+    torch/
+      slurm/
+      submit/
+  experiments/
+    ordinance_llm/
+      prompts/
+      scripts/
+      reference/
+  docs/
+  tests/
+    unit/
+    integration/
+  third_party/
+    agent-gateway/
+```
+
+### Why this shape is better
+
+- `src/newsbag/` stays focused on the production parser bagging pipeline
+- `ops/torch/` isolates cluster-specific submission logic from the parsing code
+- `experiments/` makes downstream prompt work explicit instead of mixing it into production entrypoints
+- `third_party/` makes vendored dependencies obvious and keeps them out of the mental model of the parsing package
+- `core/variants.py` becomes the single place to define fusion variants and stage IDs
+
+## Target CLI Surface
+
+The operational surface should be simple and complete:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
-
-cp configs/pipeline.example.json configs/pipeline.local.json
-# edit paths in configs/pipeline.local.json
-
-newsbag run --config configs/pipeline.local.json
+newsbag stage-inputs
+newsbag shard-manifest
+newsbag run
+newsbag status
+newsbag merge-runs
+newsbag export
 ```
 
-Run selected stages explicitly:
+Each command should have one clear job:
 
-```bash
-newsbag run --config configs/pipeline.local.json \
-  --stages paddle_layout,paddle_vl15,dell,mineru,fusion,review,transcription
+- `stage-inputs`: normalize file, directory, archive, and manifest inputs into a canonical image manifest
+- `shard-manifest`: split a corpus manifest into balanced shard manifests
+- `run`: execute one shard or one manifest through selected stages
+- `status`: summarize progress and missing artifacts for a run or corpus
+- `merge-runs`: combine shard outputs into corpus-level outputs
+- `export`: emit downstream-friendly datasets and summary tables
+
+This is the correct abstraction for large PNG corpora. Raw helper scripts can still exist, but only as thin wrappers over package code or ops tooling.
+
+## Desired Artifact Contract
+
+The pipeline should produce predictable, composable outputs.
+
+### Corpus-level
+
+```text
+corpora/<corpus_name>/
+  manifest.txt
+  shards/
+    shard_000.txt
+    shard_001.txt
+  aggregates/
+    variant_leaderboard.tsv
+    source_leaderboard.tsv
+    transcripts_combined.txt
+    qc_summary.json
 ```
 
-Stage mixed inputs into a manifest:
+### Run-level
 
-```bash
-python scripts/stage_inputs.py \
-  --input /absolute/path/to/one_page.png \
-  --input /absolute/path/to/page_batch.tar.gz \
-  --input /absolute/path/to/more_pages_dir \
-  --staging-dir /absolute/path/to/staging \
-  --output /absolute/path/to/news_manifest.txt
+```text
+runs/<corpus_name>/<shard_name>/
+  manifests/
+  logs/
+  reports/
+  outputs/
+    sources/
+    fusion/
+    transcription/
+  review/
 ```
 
-Staging automatically ignores common archive metadata junk (`__MACOSX/`, `.DS_Store`, `._*`) so those files do not leak into Slurm manifests.
+### Page-level
 
-## Quick start (Torch, recommended)
+Each page should be inspectable through stable, predictable artifacts:
 
-### 0) GPU preflight
+- source model normalized boxes
+- fused boxes and metrics
+- review overlays and comparison boards
+- OCR raw output
+- transcript box assignments
+- final transcript text
 
-```bash
-cd /scratch/$USER/paddleocr_vl15/newspaper-parsing
-bash torch/slurm/preflight_gpu.sh
-```
+## What Matters Most For Large PNG Corpora
 
-### 1) Submit end-to-end from mixed inputs
+If the priority is leveraging full functionality at scale, these capabilities matter most:
 
-Single page:
+1. Canonical manifest staging from mixed inputs.
+2. Manifest sharding as a first-class operation.
+3. Reproducible run directories with resolved configs saved inside them.
+4. Stage-selective reruns without breaking artifact contracts.
+5. Corpus-level merge/export commands so shard outputs become one coherent dataset.
+6. Clear status reporting for partial failures and missing pages.
 
-```bash
-cd /scratch/$USER/paddleocr_vl15/newspaper-parsing
-bash torch/slurm/submit_newsbag.sh \
-  --input /scratch/$USER/paddleocr_vl15/input/newspapers/page_0001.png \
-  --gpu split
-```
+Without those six pieces, the project stays usable for small batches but becomes fragile for real corpora.
 
-Directory (recursive):
+## What Already Exists And Should Be Preserved
 
-```bash
-cd /scratch/$USER/paddleocr_vl15/newspaper-parsing
+The current codebase already has the right core ideas:
 
-bash torch/slurm/submit_newsbag.sh \
-  --input /scratch/$USER/paddleocr_vl15/input/your_pages \
-  --recursive \
-  --gpu split
-```
+- manifest-based execution
+- separate parser runners
+- explicit fusion variants
+- review bundle generation
+- fused-region transcription
+- Torch-oriented split GPU execution
 
-Tar archive:
+Those are the assets to keep. The main change is organizational: make the production path obvious, and move experiment-specific code out of the critical path.
 
-```bash
-cd /scratch/$USER/paddleocr_vl15/newspaper-parsing
-bash torch/slurm/submit_newsbag.sh \
-  --input /scratch/$USER/paddleocr_vl15/input/stress_pages_20260213.tar.gz \
-  --gpu split
-```
+## Near-Term Refactor Priorities
 
-Mixed (single file + dir + archive + manifest list):
+The highest-value cleanup sequence is:
 
-```bash
-cd /scratch/$USER/paddleocr_vl15/newspaper-parsing
-bash torch/slurm/submit_newsbag.sh \
-  --input /scratch/$USER/paddleocr_vl15/input/smoke/page_a.png \
-  --input /scratch/$USER/paddleocr_vl15/input/stress_dir \
-  --input /scratch/$USER/paddleocr_vl15/input/newspapers_batch.tgz \
-  --input /scratch/$USER/paddleocr_vl15/input/list_of_pages.txt \
-  --recursive \
-  --gpu split
-```
+1. Consolidate all primary entrypoints under `newsbag`.
+2. Extract shared path and variant registries into `src/newsbag/core/`.
+3. Split large stage modules into stage packages with smaller files.
+4. Move ordinance / LLM experiment code under `experiments/ordinance_llm/`.
+5. Move cluster scripts under `ops/torch/`.
+6. Add corpus-level merge and export commands.
 
-What `--gpu split` does:
+## Related Docs
 
-- L40S job: `paddle_layout,paddle_vl15`
-- H200 job: `dell,mineru`
-- CPU job: `fusion,review` (after both GPU jobs succeed)
-- L40S job: `transcription` (after fusion/review succeeds)
+- [`docs/output_layout.md`](docs/output_layout.md): current run artifact layout
+- [`docs/torch_hpc.md`](docs/torch_hpc.md): Torch cluster operating guidance
 
-This is the safest high-throughput default on Torch.
+## Current Status
 
-### 2) Monitor
-
-```bash
-cd /scratch/$USER/paddleocr_vl15/newspaper-parsing
-bash scripts/monitor_torch_jobs.sh
-```
-
-## Outputs you get per run
-
-Each run writes under:
-
-- `/scratch/$USER/paddleocr_vl15/runs/<run_name_timestamp>/`
-
-Key outputs:
-
-- `outputs/sources/...` per-model normalized boxes and label aggregates
-- `outputs/fusion/variant_leaderboard.tsv`
-- `outputs/fusion/source_leaderboard.tsv`
-- `outputs/fusion/per_page_variant_metrics.tsv`
-- `review/pages/<slug>/06_board.png`
-- `review/top20_informative/`
-- `review/top20_miner_delta/`
-- `outputs/transcription/<variant>/transcription_report.tsv`
-- `outputs/transcription/<variant>/<slug>/transcript.txt`
-- `outputs/transcription/<variant>/transcript_combined.txt`
-
-For exact schemas and filenames, see `docs/output_layout.md`.
-
-## Fusion variants
-
-- `S1_paddle_best_single`
-- `S2_dell_only`
-- `S3_mineru_only`
-- `P1_paddle_union4`
-- `P2_paddle_union4_plus_dell`
-- `P3_paddle_union4_plus_mineru`
-- `P4_paddle_union4_plus_dell_plus_mineru`
-
-Default recommended variant in Torch config:
-
-- `P4_paddle_union4_plus_dell_plus_mineru`
-
-## Operational notes
-
-- Always request Torch GPUs via `--gres=gpu:<type>:1`.
-- Keep fusion/review off GPU partitions (CPU job only) to avoid low-util cancellation.
-- As of February 2026 on Torch, Paddle stages are most reliable on `l40s_public`; split mode handles this automatically.
-- External-source guardrails are enabled by default:
-  - `dell.min_nonempty_pages` (default `1`)
-  - `mineru.min_nonempty_pages` (default `1`)
-  If an external source returns empty boxes across all processed pages, the run fails fast before fusion/review.
-
-## Mini-Run Example (Abilene + Bakersfield, Corrected Dell, Feb 13, 2026)
-
-This is a real completed run on Torch with two representative pages:
-
-- Run root: `/scratch/$USER/paddleocr_vl15/runs/layout_bagging_20260213_024626`
-- Local synced artifacts:
-  - `/Users/saulrichardson/Downloads/ad-hoc-newspapers/newspaper-parsing-mini-run-20260213-024626`
-
-Submission command used:
-
-```bash
-cd /scratch/$USER/paddleocr_vl15/newspaper-parsing
-bash torch/slurm/submit_newsbag.sh \
-  --input /scratch/$USER/paddleocr_vl15/input/newspaper_parsing_example_20260213 \
-  --gpu l40s
-```
-
-### Visuals from that run
-
-![Abilene input](docs/images/mini_run/abilene_input.png)
-
-![Abilene full board](docs/images/mini_run/abilene_board.png)
-
-![Bakersfield full board](docs/images/mini_run/bakersfield_board.png)
-
-![Bakersfield with vs without MinerU](docs/images/mini_run/bakersfield_miner_delta.png)
-
-![Abilene Dell-only overlay (corrected)](docs/images/mini_run/abilene_dell_layout.png)
-
-### Actual output metrics (from `variant_leaderboard.tsv`)
-
-| Variant | Mean Base Recall | Mean Text Area | Mean Boxes |
-|---|---:|---:|---:|
-| `P2_paddle_union4_plus_dell` | 0.997774 | 0.737427 | 329.0 |
-| `S1_paddle_best_single` | 0.966463 | 0.698220 | 224.5 |
-| `P4_paddle_union4_plus_dell_plus_mineru` | 0.997929 | 0.738797 | 404.5 |
-
-### Dell sanity check (corrected)
-
-- `abilene-reporter-news-apr-29-1946-p-19`: `23` Dell boxes
-- `bakersfield-californian-aug-31-1937-p-14`: `28` Dell boxes
-- Source files:
-  - `outputs/sources/dell/dell_c0005_i010/<slug>/layout_boxes.normalized.json`
-
-### Actual transcription outputs
-
-Transcription is ROI-first: Paddle OCR runs on a cleaned non-redundant subset of fused `text/title`
-regions (not full-page OCR), then lines are remapped to page coordinates and emitted in fused reading order.
-
-- `outputs/transcription/P4_paddle_union4_plus_dell_plus_mineru/transcription_report.tsv`
-- `outputs/transcription/P4_paddle_union4_plus_dell_plus_mineru/transcript_combined.txt`
-- `outputs/transcription/P4_paddle_union4_plus_dell_plus_mineru/<slug>/ocr_regions_overlay.png`
-- `outputs/transcription/P4_paddle_union4_plus_dell_plus_mineru/<slug>/ocr_lines_overlay.png`
-
-Transcription report excerpt:
-
-| Page | Fused Boxes | OCR Regions | OCR Lines | Assigned Lines | Transcript Chars |
-|---|---:|---:|---:|---:|---:|
-| `abilene-reporter-news-apr-29-1946-p-19` | 331 | 54 | 3814 | 3814 | 32396 |
-| `bakersfield-californian-aug-31-1937-p-14` | 457 | 112 | 2871 | 2871 | 31760 |
-
-Cleaned OCR-region counts in this rerun:
-
-- Abilene: `331 fused boxes -> 54 OCR regions`
-- Bakersfield: `457 fused boxes -> 112 OCR regions`
-
-![Abilene cleaned OCR regions](docs/images/mini_run/abilene_ocr_regions_overlay.png)
-
-![Abilene OCR line overlay](docs/images/mini_run/abilene_ocr_lines_overlay.png)
-
-![Bakersfield cleaned OCR regions](docs/images/mini_run/bakersfield_ocr_regions_overlay.png)
-
-## Licensing note
-
-`MinerU` integration depends on `mineru_vl_utils` (AGPL-3.0). Confirm license compatibility for your deployment/distribution model.
-
-## LaTeX Walkthrough
-
-A full technical walkthrough (with visuals and real run outputs) is available at:
-
-- `docs/newspaper_parsing_pipeline.tex`
-
-Compile from the `docs/` directory:
-
-```bash
-cd docs
-xelatex newspaper_parsing_pipeline.tex
-xelatex newspaper_parsing_pipeline.tex
-```
+This repository already runs the full parser bagging flow today. The remaining work is to make the intended architecture explicit in code and docs so the whole system scales cleanly to very large newspaper corpora.
