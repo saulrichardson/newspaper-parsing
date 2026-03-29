@@ -135,6 +135,172 @@ flowchart LR
 - Shard-friendly execution: every stage should work on a manifest, not on implicit directory scans
 - Fast failure: empty external outputs, missing inputs, and broken configs should fail loudly
 
+## How One Run Actually Works
+
+One run has a concrete internal artifact flow:
+
+```mermaid
+flowchart LR
+  M["manifest.txt"] --> P["run_pipeline<br/>create run_dir + resolved manifest + resolved config"]
+
+  P --> PL["paddle_layout<br/>3 layout detectors"]
+  P --> PV["paddle_vl15<br/>layout + semantic blocks"]
+  P --> DE["dell"]
+  P --> MI["mineru"]
+
+  PL --> PLN["outputs/sources/paddle_layout/<variant>/<slug>/layout_boxes.normalized.json"]
+  PV --> PVN["outputs/sources/paddle_vl15/<variant>/<slug>/layout_boxes.normalized.json<br/>+ parsing_blocks.json"]
+  DE --> DEN["outputs/sources/dell/<variant>/<slug>/layout_boxes.normalized.json"]
+  MI --> MIN["outputs/sources/mineru/<variant>/<slug>/layout_boxes.normalized.json"]
+
+  PLN --> FU["fusion<br/>build variants + metrics + summary"]
+  PVN --> FU
+  DEN --> FU
+  MIN --> FU
+
+  FU --> FS["outputs/fusion/summary.json<br/>variant_leaderboard.tsv<br/>source_leaderboard.tsv"]
+  FU --> FV["outputs/fusion/<variant>/<slug>/fused_boxes.json"]
+
+  FS --> RV["review<br/>pages/ + top20 packs"]
+  FV --> TR["transcription<br/>select OCR boxes -> crop -> OCR -> remap -> assign"]
+  TR --> TO["outputs/transcription/<variant>/<slug>/transcript.txt"]
+```
+
+### 1. Run bootstrap
+
+Before any model runs, the pipeline:
+
+- reads and validates every path in the manifest
+- creates a run root with `manifests/`, `logs/`, `reports/`, `outputs/`, and `review/`
+- writes `manifests/images.resolved.txt`
+- writes `manifests/config.resolved.json`
+
+That matters for corpus work because every shard run becomes reproducible and self-describing.
+
+### 2. Source runners and normalization
+
+Every parser stage writes raw outputs and then rewrites them into one normalized box schema.
+
+- `paddle_layout` runs three layout detectors and writes raw Paddle outputs plus `layout_boxes.normalized.json`
+- `paddle_vl15` writes both normalized layout boxes and the full `parsing_blocks.json` semantic payload
+- `dell` and `mineru` run as external stages, then normalize their raw boxes into the same schema as Paddle
+- each source family also writes label histograms so you can inspect raw-vs-normalized label distributions at run level
+
+The shared normalized box contract is the hinge point of the whole project:
+
+```json
+{
+  "source_family": "paddle|dell|mineru",
+  "source_model": "variant_id",
+  "source_label": "raw model label",
+  "norm_label": "text|title|table|image|other",
+  "bbox_xyxy": [x1, y1, x2, y2],
+  "score": 0.0,
+  "reading_order": null,
+  "text": null
+}
+```
+
+That common schema is what makes bagging possible. Fusion, review, and transcription should only consume normalized boxes, never parser-specific raw payloads.
+
+### 3. Fusion internals
+
+Fusion is not just "union all boxes."
+
+For each page, the current implementation does this:
+
+- loads normalized boxes from each Paddle variant, Dell, and MinerU
+- selects the best single Paddle variant for the page
+- forms the Paddle union across the three layout detectors plus VL1.5
+- derives consensus pseudo-lines from text/title-like boxes across all sources
+- builds a base raster mask from consensus-worthy candidates
+- evaluates seven named fusion variants:
+  - `S1_paddle_best_single`
+  - `S2_dell_only`
+  - `S3_mineru_only`
+  - `P1_paddle_union4`
+  - `P2_paddle_union4_plus_dell`
+  - `P3_paddle_union4_plus_mineru`
+  - `P4_paddle_union4_plus_dell_plus_mineru`
+- dedupes and denoises candidate boxes before scoring them
+
+The denoising step is important. It is where the pipeline suppresses giant unsupported text strips and, when needed, replaces weak giant boxes with smaller synthetic recovery boxes around uncovered pseudo-lines. This is why the system can preserve recall without letting a single noisy parser dominate the output.
+
+Each variant is scored with metrics written per page and aggregated at run level:
+
+- `base_recall_ratio`
+- `line_coverage_ratio`
+- `text_area_ratio`
+- `box_count`
+
+The run summary keeps both:
+
+- `best_variant_by_score`
+- `recommended_variant`
+
+The intended behavior is:
+
+- prefer the configured recommended variant when it exists
+- otherwise fall back to the empirically best-scoring variant for that run
+
+### 4. Review internals
+
+Review is a real stage, not just a screenshot helper.
+
+For each rendered page, the review bundle writes:
+
+- the original page
+- each Paddle source overlay
+- a dedicated Paddle-only comparison board
+- Dell and MinerU overlays
+- the recommended fused overlay
+- an explicit `P2` vs `P4` board showing the effect of adding MinerU
+
+There are two review modes:
+
+- `all`: render every page
+- `top20`: render only the most informative pages and the strongest MinerU-delta pages
+
+That lets the same project support both:
+
+- exhaustive review on smaller runs
+- selective quality control on large shard runs
+
+### 5. Transcription internals
+
+Transcription is ROI-first, not full-page OCR.
+
+For the selected fused variant, the stage:
+
+- loads fused boxes for the page
+- keeps only configured labels, usually `text` and `title`
+- dedupes those fused boxes down to compact OCR regions
+- crops each OCR region out of the original page
+- runs Paddle OCR over the crop directory
+- parses crop-level OCR lines
+- translates each OCR line back into page coordinates
+- assigns remapped OCR lines back into the fused reading-order boxes
+- writes `transcript_boxes.json`, `transcript.txt`, and `transcript_combined.txt`
+
+That is the key inner design choice on the transcription side:
+
+- fusion decides where OCR should happen
+- OCR happens on cropped regions, not on full pages
+- final transcript text is emitted in fused region order, not in raw OCR order
+
+This is what makes the transcripts align with the fused layout structure instead of becoming one more noisy parser output.
+
+### 6. Stage dependency model
+
+The stage dependency model should stay explicit:
+
+- `paddle_layout`, `paddle_vl15`, `dell`, and `mineru` can run independently from the same manifest
+- `fusion` depends on normalized source outputs
+- `review` and `transcription` depend on `outputs/fusion/summary.json`
+- `review` and `transcription` can be rerun without rerunning model inference, as long as fusion outputs already exist
+
+That partial rerun model is one of the most valuable pieces of the project for large corpora, because it separates expensive GPU inference from downstream inspection and OCR work.
+
 ## Target Repo Layout
 
 The repo should be organized by responsibility, not by historical script accumulation.
