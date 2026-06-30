@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import sys
 from pathlib import Path
 
 from newsbag.config import load_config
 from newsbag.pipeline import run_pipeline
+from newsbag.status import format_summary_text, summarize_run
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -30,11 +33,44 @@ def _build_parser() -> argparse.ArgumentParser:
             "Allowed: paddle_layout,paddle_vl15,dell,mineru,fusion,review,transcription"
         ),
     )
+
+    statp = sub.add_parser("status", help="Summarize progress of an existing run directory.")
+    statp.add_argument(
+        "--run-dir",
+        default="",
+        help=(
+            "Run directory to inspect. If omitted, uses $RUN_DIR if set; otherwise errors. "
+            "Example: /scratch/$USER/paddleocr_vl15/runs/layout_bagging_YYYYMMDD_HHMMSS"
+        ),
+    )
+    statp.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit JSON instead of human-readable text.",
+    )
+    statp.add_argument(
+        "--missing",
+        type=int,
+        default=0,
+        help="If >0, include up to N missing slugs per stage.",
+    )
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
+    if args.command == "status":
+        run_dir_txt = str(args.run_dir).strip() or os.environ.get("RUN_DIR", "").strip()
+        if not run_dir_txt:
+            raise SystemExit("ERROR: --run-dir is required (or set RUN_DIR=...).")
+        run_dir = Path(run_dir_txt).expanduser().resolve()
+        summary = summarize_run(run_dir, missing_limit=int(args.missing))
+        if bool(args.json):
+            print(json.dumps(summary, indent=2, sort_keys=True))
+        else:
+            print(format_summary_text(summary), end="")
+        return 0
+
     if args.command != "run":
         raise ValueError(f"Unsupported command: {args.command}")
 
