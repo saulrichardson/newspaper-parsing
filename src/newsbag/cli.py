@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from newsbag.config import load_config
+from newsbag.bagging import run_bagging_canary
 from newsbag.pipeline import run_pipeline
 from newsbag.status import format_summary_text, summarize_run
 
@@ -54,6 +55,16 @@ def _build_parser() -> argparse.ArgumentParser:
         default=0,
         help="If >0, include up to N missing slugs per stage.",
     )
+
+    bagp = sub.add_parser("bagging-canary", help="Run the manifest-driven parser-bagging canary.")
+    bagp.add_argument("--manifest", required=True, help="Parse input JSONL manifest.")
+    bagp.add_argument("--run-dir", required=True, help="Output run directory.")
+    bagp.add_argument(
+        "--profile",
+        default="adaptive",
+        choices=["baseline", "adaptive", "full"],
+        help="Model bag profile.",
+    )
     return p
 
 
@@ -70,6 +81,15 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(format_summary_text(summary), end="")
         return 0
+
+    if args.command == "bagging-canary":
+        bundle = run_bagging_canary(
+            manifest_path=Path(args.manifest),
+            run_dir=Path(args.run_dir),
+            profile_name=str(args.profile),
+        )
+        print(json.dumps(bundle.performance | {"run_dir": bundle.run_dir}, indent=2, sort_keys=True))
+        return 1 if int(bundle.performance.get("errors", 0) or 0) else 0
 
     if args.command != "run":
         raise ValueError(f"Unsupported command: {args.command}")

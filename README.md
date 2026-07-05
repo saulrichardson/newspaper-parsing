@@ -2,6 +2,32 @@
 
 Corpus-scale newspaper page parsing for scanned page images. The system runs several layout parsers over the same page, normalizes their outputs into one box schema, fuses them into cleaner page structure, generates review artifacts, and produces reading-order transcripts from fused regions.
 
+This branch is the breaking, forward-looking parser-bagging refactor. The
+active contract is manifest in, run bundle out:
+
+- acquisition emits parser-ready source artifact JSONL rows with stable page
+  IDs, image paths, checksums, and source provenance;
+- parsing profiles each page, runs configurable model adapters, normalizes
+  model outputs, fuses regions, writes transcripts and review packets, and
+  records performance/provenance;
+- analysis consumes fused page contracts and transcripts through evidence-first
+  offline retrieval.
+
+Fast local smoke:
+
+```bash
+newsbag bagging-canary \
+  --manifest /path/to/source_artifacts.jsonl \
+  --run-dir /tmp/newsbag_bagging_canary \
+  --profile full
+```
+
+Torch scheduler smoke:
+
+```bash
+bash scripts/submit_torch_bagging_canary.sh
+```
+
 ## What The System Produces
 
 - per-model normalized layout outputs
