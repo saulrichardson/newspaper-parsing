@@ -22,6 +22,16 @@ newsbag bagging-canary \
   --profile full
 ```
 
+External model smoke:
+
+```bash
+newsbag bagging-canary \
+  --manifest /path/to/source_artifacts.jsonl \
+  --run-dir /tmp/newsbag_external_smoke \
+  --profile external_smoke \
+  --config configs/bagging.command.example.json
+```
+
 Torch scheduler smoke:
 
 ```bash

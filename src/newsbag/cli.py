@@ -59,10 +59,10 @@ def _build_parser() -> argparse.ArgumentParser:
     bagp = sub.add_parser("bagging-canary", help="Run the manifest-driven parser-bagging canary.")
     bagp.add_argument("--manifest", required=True, help="Parse input JSONL manifest.")
     bagp.add_argument("--run-dir", required=True, help="Output run directory.")
+    bagp.add_argument("--config", default="", help="Optional parser-bagging adapter config JSON.")
     bagp.add_argument(
         "--profile",
         default="adaptive",
-        choices=["baseline", "adaptive", "full"],
         help="Model bag profile.",
     )
     return p
@@ -87,6 +87,7 @@ def main(argv: list[str] | None = None) -> int:
             manifest_path=Path(args.manifest),
             run_dir=Path(args.run_dir),
             profile_name=str(args.profile),
+            config_path=Path(args.config) if str(args.config).strip() else None,
         )
         print(json.dumps(bundle.performance | {"run_dir": bundle.run_dir}, indent=2, sort_keys=True))
         return 1 if int(bundle.performance.get("errors", 0) or 0) else 0

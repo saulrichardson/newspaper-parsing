@@ -120,6 +120,10 @@ def write_jsonl(path: Path, rows: Iterable[Any]) -> int:
     return count
 
 
+def read_json(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def read_parse_input_manifest(path: Path) -> list[ParseInputPage]:
     pages: list[ParseInputPage] = []
     with path.open("r", encoding="utf-8") as handle:
@@ -156,4 +160,3 @@ def read_parse_input_manifest(path: Path) -> list[ParseInputPage]:
                 )
             )
     return pages
-

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from PIL import Image, ImageStat
 
@@ -17,6 +19,7 @@ from newsbag.contracts import (
     ParseInputPage,
     RunBundle,
     RuntimeInfo,
+    read_json,
     read_parse_input_manifest,
     write_json,
     write_jsonl,
@@ -31,11 +34,36 @@ class ModelSpec:
     profile_names: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class AdapterContext:
+    run_dir: Path
+    manifest_path: Path
+    repo_root: Path
+
+
 class ModelAdapter(Protocol):
     spec: ModelSpec
 
-    def run(self, page: ParseInputPage, profile: PageProfile) -> ModelOutput:
+    def run(self, page: ParseInputPage, profile: PageProfile, context: AdapterContext) -> ModelOutput:
         ...
+
+
+@dataclass(frozen=True)
+class CommandAdapterConfig:
+    model_id: str
+    family: str
+    resource_class: str
+    profile_names: tuple[str, ...]
+    command: tuple[str, ...]
+    timeout_seconds: float = 600.0
+    env: dict[str, str] = field(default_factory=dict)
+    cwd: str = ""
+
+
+@dataclass(frozen=True)
+class BaggingConfig:
+    include_builtin_adapters: bool = True
+    command_adapters: tuple[CommandAdapterConfig, ...] = ()
 
 
 MODEL_REGISTRY: tuple[ModelSpec, ...] = (
@@ -98,7 +126,7 @@ def profile_page(page: ParseInputPage) -> PageProfile:
 class BaselineGeometryAdapter:
     spec = MODEL_REGISTRY[0]
 
-    def run(self, page: ParseInputPage, profile: PageProfile) -> ModelOutput:
+    def run(self, page: ParseInputPage, profile: PageProfile, context: AdapterContext) -> ModelOutput:
         started = time.perf_counter()
         margin_x = max(8, int(profile.width * 0.08))
         margin_y = max(8, int(profile.height * 0.08))
@@ -129,7 +157,7 @@ class BaselineGeometryAdapter:
 class ColumnDetectorAdapter:
     spec = MODEL_REGISTRY[1]
 
-    def run(self, page: ParseInputPage, profile: PageProfile) -> ModelOutput:
+    def run(self, page: ParseInputPage, profile: PageProfile, context: AdapterContext) -> ModelOutput:
         started = time.perf_counter()
         gutter = max(8, int(profile.width * 0.03))
         mid = profile.width // 2
@@ -175,7 +203,7 @@ class ColumnDetectorAdapter:
 class LegalNoticeProbeAdapter:
     spec = MODEL_REGISTRY[2]
 
-    def run(self, page: ParseInputPage, profile: PageProfile) -> ModelOutput:
+    def run(self, page: ParseInputPage, profile: PageProfile, context: AdapterContext) -> ModelOutput:
         started = time.perf_counter()
         region = NormalizedRegion(
             region_id=f"{page.page_id}:legal-probe:footer",
@@ -216,10 +244,239 @@ ADAPTERS: dict[str, ModelAdapter] = {
 }
 
 
-def adapters_for_profile(profile_name: str) -> list[ModelAdapter]:
-    if profile_name not in {"baseline", "adaptive", "full"}:
-        raise ValueError("profile must be one of: baseline, adaptive, full")
-    return [ADAPTERS[spec.model_id] for spec in MODEL_REGISTRY if profile_name in spec.profile_names]
+def _config_bool(payload: dict[str, Any], key: str, default: bool) -> bool:
+    value = payload.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return bool(value)
+
+
+def load_bagging_config(config_path: Path | None) -> BaggingConfig:
+    if config_path is None:
+        return BaggingConfig()
+    payload = read_json(config_path.expanduser().resolve())
+    if not isinstance(payload, dict):
+        raise ValueError(f"bagging config must be a JSON object: {config_path}")
+    command_adapters: list[CommandAdapterConfig] = []
+    for index, raw in enumerate(payload.get("command_adapters") or [], start=1):
+        if not isinstance(raw, dict):
+            raise ValueError(f"command_adapters[{index}] must be a JSON object")
+        model_id = str(raw.get("model_id") or "").strip()
+        command = tuple(str(part) for part in (raw.get("command") or []))
+        if not model_id:
+            raise ValueError(f"command_adapters[{index}] is missing model_id")
+        if not command:
+            raise ValueError(f"command_adapters[{index}] is missing command")
+        profile_names = tuple(str(item).strip() for item in raw.get("profiles", raw.get("profile_names", [])) if str(item).strip())
+        if not profile_names:
+            raise ValueError(f"command_adapters[{index}] must define at least one profile")
+        command_adapters.append(
+            CommandAdapterConfig(
+                model_id=model_id,
+                family=str(raw.get("family") or "external").strip() or "external",
+                resource_class=str(raw.get("resource_class") or "cpu").strip() or "cpu",
+                profile_names=profile_names,
+                command=command,
+                timeout_seconds=float(raw.get("timeout_seconds") or 600.0),
+                env={str(k): str(v) for k, v in dict(raw.get("env") or {}).items()},
+                cwd=str(raw.get("cwd") or ""),
+            )
+        )
+    return BaggingConfig(
+        include_builtin_adapters=_config_bool(payload, "include_builtin_adapters", True),
+        command_adapters=tuple(command_adapters),
+    )
+
+
+def _region_from_payload(
+    raw: dict[str, Any],
+    *,
+    page_id: str,
+    model_id: str,
+    index: int,
+) -> NormalizedRegion:
+    bbox = raw.get("bbox_xyxy") or raw.get("bbox") or raw.get("box")
+    if not isinstance(bbox, list) or len(bbox) != 4:
+        raise ValueError(f"region {index} for {page_id}/{model_id} is missing bbox_xyxy")
+    label = str(raw.get("label") or raw.get("norm_label") or "text").strip() or "text"
+    confidence_raw = raw.get("confidence", raw.get("score", 0.0))
+    confidence = max(0.0, min(1.0, float(confidence_raw)))
+    reading_order_raw = raw.get("reading_order")
+    region_id = str(raw.get("region_id") or f"{page_id}:{model_id}:{index:04d}")
+    provenance_raw = raw.get("provenance") or [model_id]
+    provenance = [str(item) for item in provenance_raw] if isinstance(provenance_raw, list) else [str(provenance_raw)]
+    metadata = dict(raw.get("metadata") or {})
+    return NormalizedRegion(
+        region_id=region_id,
+        bbox_xyxy=[float(value) for value in bbox],
+        label=label,
+        confidence=confidence,
+        source_model=str(raw.get("source_model") or model_id),
+        text=str(raw.get("text") or ""),
+        reading_order=int(reading_order_raw) if reading_order_raw not in (None, "") else None,
+        provenance=provenance,
+        metadata=metadata,
+    )
+
+
+def model_output_from_payload(
+    payload: dict[str, Any],
+    *,
+    page_id: str,
+    model_id: str,
+    spec: ModelSpec,
+    profile: PageProfile,
+    elapsed_seconds: float,
+    runtime_metadata: dict[str, Any] | None = None,
+) -> ModelOutput:
+    payload_page_id = str(payload.get("page_id") or page_id)
+    payload_model_id = str(payload.get("model_id") or model_id)
+    if payload_page_id != page_id:
+        raise ValueError(f"adapter {model_id} returned page_id={payload_page_id!r}, expected {page_id!r}")
+    if payload_model_id != model_id:
+        raise ValueError(f"adapter {model_id} returned model_id={payload_model_id!r}")
+    raw_regions = payload.get("regions") or []
+    if not isinstance(raw_regions, list):
+        raise ValueError(f"adapter {model_id} returned non-list regions")
+    runtime_raw = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+    metadata = dict(runtime_raw.get("metadata") or {})
+    if runtime_metadata:
+        metadata.update(runtime_metadata)
+    return ModelOutput(
+        page_id=page_id,
+        model_id=model_id,
+        regions=[
+            _region_from_payload(raw, page_id=page_id, model_id=model_id, index=index)
+            for index, raw in enumerate(raw_regions, start=1)
+            if isinstance(raw, dict)
+        ],
+        runtime=RuntimeInfo(
+            seconds=round(float(runtime_raw.get("seconds", elapsed_seconds) or 0.0), 6),
+            resource_class=str(runtime_raw.get("resource_class") or spec.resource_class),
+            status=str(runtime_raw.get("status") or "ok"),
+            error=str(runtime_raw.get("error") or ""),
+            metadata=metadata,
+        ),
+        profile=profile,
+        metadata=dict(payload.get("metadata") or {}),
+    )
+
+
+class CommandAdapter:
+    def __init__(self, config: CommandAdapterConfig) -> None:
+        self.config = config
+        self.spec = ModelSpec(
+            model_id=config.model_id,
+            family=config.family,
+            resource_class=config.resource_class,
+            profile_names=config.profile_names,
+        )
+
+    def _format_command(
+        self,
+        *,
+        page: ParseInputPage,
+        profile: PageProfile,
+        context: AdapterContext,
+        output_path: Path,
+        profile_path: Path,
+    ) -> list[str]:
+        replacements = {
+            "page_id": page.page_id,
+            "image_path": str(Path(page.image_path).expanduser().resolve()),
+            "issue_id": page.issue_id,
+            "page_number": "" if page.page_number is None else str(page.page_number),
+            "run_dir": str(context.run_dir),
+            "repo_root": str(context.repo_root),
+            "output_path": str(output_path),
+            "profile_path": str(profile_path),
+            "model_id": self.spec.model_id,
+            "width": str(profile.width),
+            "height": str(profile.height),
+        }
+        return [part.format(**replacements) for part in self.config.command]
+
+    def run(self, page: ParseInputPage, profile: PageProfile, context: AdapterContext) -> ModelOutput:
+        started = time.perf_counter()
+        output_path = context.run_dir / "work" / "command_adapters" / self.spec.model_id / f"{page.page_id}.json"
+        profile_path = context.run_dir / "profiles" / f"{page.page_id}.json"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        command = self._format_command(
+            page=page,
+            profile=profile,
+            context=context,
+            output_path=output_path,
+            profile_path=profile_path,
+        )
+        env = os.environ.copy()
+        env.update(self.config.env)
+        cwd = Path(self.config.cwd).expanduser().resolve() if self.config.cwd else context.repo_root
+        completed = subprocess.run(
+            command,
+            cwd=cwd,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=self.config.timeout_seconds,
+            check=False,
+        )
+        elapsed = time.perf_counter() - started
+        if completed.returncode != 0:
+            raise RuntimeError(
+                f"adapter {self.spec.model_id} failed with exit {completed.returncode}: "
+                f"{completed.stderr[-1200:] or completed.stdout[-1200:]}"
+            )
+        if output_path.exists():
+            payload = read_json(output_path)
+        else:
+            stdout = completed.stdout.strip()
+            if not stdout:
+                raise RuntimeError(f"adapter {self.spec.model_id} wrote neither {output_path} nor stdout JSON")
+            payload = json.loads(stdout)
+        if not isinstance(payload, dict):
+            raise ValueError(f"adapter {self.spec.model_id} output must be a JSON object")
+        return model_output_from_payload(
+            payload,
+            page_id=page.page_id,
+            model_id=self.spec.model_id,
+            spec=self.spec,
+            profile=profile,
+            elapsed_seconds=elapsed,
+            runtime_metadata={
+                "adapter_kind": "command",
+                "command": command,
+                "stdout_tail": completed.stdout[-1200:],
+                "stderr_tail": completed.stderr[-1200:],
+                "output_path": str(output_path),
+            },
+        )
+
+
+def adapters_for_profile(profile_name: str, config_path: Path | None = None) -> list[ModelAdapter]:
+    config = load_bagging_config(config_path)
+    adapters: list[ModelAdapter] = []
+    if config.include_builtin_adapters:
+        adapters.extend(ADAPTERS[spec.model_id] for spec in MODEL_REGISTRY if profile_name in spec.profile_names)
+    adapters.extend(
+        CommandAdapter(adapter_config)
+        for adapter_config in config.command_adapters
+        if profile_name in adapter_config.profile_names
+    )
+    if not adapters:
+        available_profiles = set()
+        if config.include_builtin_adapters:
+            for spec in MODEL_REGISTRY:
+                available_profiles.update(spec.profile_names)
+        for adapter_config in config.command_adapters:
+            available_profiles.update(adapter_config.profile_names)
+        raise ValueError(f"profile {profile_name!r} matched no adapters; available profiles: {sorted(available_profiles)}")
+    model_ids = [adapter.spec.model_id for adapter in adapters]
+    duplicates = sorted({model_id for model_id in model_ids if model_ids.count(model_id) > 1})
+    if duplicates:
+        raise ValueError(f"duplicate adapter model_id values: {duplicates}")
+    return adapters
 
 
 def fuse_page(page_id: str, outputs: list[ModelOutput]) -> FusedPage:
@@ -254,6 +511,7 @@ def run_bagging_canary(
     manifest_path: Path,
     run_dir: Path,
     profile_name: str = "adaptive",
+    config_path: Path | None = None,
     repo_root: Path | None = None,
 ) -> RunBundle:
     started = time.perf_counter()
@@ -263,7 +521,8 @@ def run_bagging_canary(
     pages = read_parse_input_manifest(manifest_path)
     if not pages:
         raise ValueError(f"parse input manifest is empty: {manifest_path}")
-    adapters = adapters_for_profile(profile_name)
+    adapters = adapters_for_profile(profile_name, config_path=config_path)
+    context = AdapterContext(run_dir=run_dir, manifest_path=manifest_path, repo_root=repo_root)
     errors: list[dict[str, object]] = []
     performance_rows: list[dict[str, object]] = []
     fused_pages: list[FusedPage] = []
@@ -277,7 +536,7 @@ def run_bagging_canary(
             write_json(run_dir / "profiles" / f"{page.page_id}.json", page_profile)
             outputs: list[ModelOutput] = []
             for adapter in adapters:
-                output = adapter.run(page, page_profile)
+                output = adapter.run(page, page_profile, context)
                 outputs.append(output)
                 write_json(
                     run_dir / "outputs" / "model_outputs" / output.model_id / f"{page.page_id}.json",
@@ -348,6 +607,7 @@ def run_bagging_canary(
         provenance={
             "repo_commit": _git_commit(repo_root),
             "contract_version": "parser-bagging-v1",
+            "bagging_config": str(config_path.expanduser().resolve()) if config_path is not None else "",
         },
     )
     write_json(run_dir / "summary.json", bundle)

@@ -1,0 +1,24 @@
+{
+  "include_builtin_adapters": true,
+  "command_adapters": [
+    {
+      "model_id": "external_layout_example_v1",
+      "family": "layout",
+      "resource_class": "cpu",
+      "profiles": ["external_smoke", "full"],
+      "timeout_seconds": 600,
+      "command": [
+        "python",
+        "scripts/my_layout_adapter.py",
+        "--page-id",
+        "{page_id}",
+        "--image-path",
+        "{image_path}",
+        "--profile-json",
+        "{profile_path}",
+        "--output-json",
+        "{output_path}"
+      ]
+    }
+  ]
+}
