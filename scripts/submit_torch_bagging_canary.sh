@@ -8,6 +8,7 @@ REMOTE="${REMOTE:-torch}"
 ACCOUNT="${ACCOUNT:-torch_pr_609_general}"
 PARTITION="${PARTITION:-cs}"
 PROFILE="${PROFILE:-full}"
+CONFIG="${CONFIG:-}"
 REMOTE_BASE="${REMOTE_BASE:-}"
 WAIT=1
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-900}"
@@ -25,6 +26,7 @@ Flags:
   --account ACCOUNT      Slurm account, default: torch_pr_609_general
   --partition PARTITION  Slurm partition, default: cs
   --profile PROFILE      baseline|adaptive|full, default: full
+  --config PATH          Optional bagging adapter config, relative to repo or absolute on Torch
   --timeout SECONDS      Poll timeout, default: 900
   --poll SECONDS         Poll interval, default: 10
   --no-wait              Submit and print job/run paths without polling
@@ -53,6 +55,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --profile)
       PROFILE="${2:-full}"
+      shift 2
+      ;;
+    --config)
+      CONFIG="${2:-}"
       shift 2
       ;;
     --timeout)
@@ -87,11 +93,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "$PROFILE" != "baseline" && "$PROFILE" != "adaptive" && "$PROFILE" != "full" ]]; then
-  echo "ERROR: --profile must be one of baseline, adaptive, full" >&2
-  exit 2
-fi
-
 REMOTE_USER="$(ssh "$REMOTE" 'printf %s "$USER"')"
 if [[ -z "$REMOTE_USER" ]]; then
   echo "ERROR: could not determine remote user for $REMOTE" >&2
@@ -106,6 +107,14 @@ PROJECT_ROOT="$REMOTE_BASE/newspaper-parsing"
 RUN_DIR="$REMOTE_BASE/runs/bagging_canary_$(date -u +%Y%m%d_%H%M%S)"
 MANIFEST="$REMOTE_BASE/fixtures/parse_input.jsonl"
 SCRIPT="torch/slurm/newsbag_bagging_canary_cs.sbatch"
+CONFIG_REMOTE=""
+if [[ -n "$CONFIG" ]]; then
+  if [[ "$CONFIG" = /* ]]; then
+    CONFIG_REMOTE="$CONFIG"
+  else
+    CONFIG_REMOTE="$PROJECT_ROOT/$CONFIG"
+  fi
+fi
 
 echo "[plan] remote=$REMOTE"
 echo "[plan] remote_user=$REMOTE_USER"
@@ -114,6 +123,9 @@ echo "[plan] project_root=$PROJECT_ROOT"
 echo "[plan] run_dir=$RUN_DIR"
 echo "[plan] manifest=$MANIFEST"
 echo "[plan] account=$ACCOUNT partition=$PARTITION profile=$PROFILE"
+if [[ -n "$CONFIG_REMOTE" ]]; then
+  echo "[plan] config=$CONFIG_REMOTE"
+fi
 
 if [[ "$PLAN_ONLY" -eq 1 ]]; then
   echo "[plan] would rsync repo unless --skip-sync"
@@ -139,7 +151,7 @@ ssh "$REMOTE" "cd '$PROJECT_ROOT' && sbatch --test-only -A '$ACCOUNT' -p '$PARTI
 
 JOB_ID="$(
   ssh "$REMOTE" "cd '$PROJECT_ROOT' && sbatch --parsable -A '$ACCOUNT' -p '$PARTITION' \
-    --export=ALL,BASE='$REMOTE_BASE',PROJECT_ROOT='$PROJECT_ROOT',RUN_DIR='$RUN_DIR',MANIFEST='$MANIFEST',PROFILE='$PROFILE' \
+    --export=ALL,BASE='$REMOTE_BASE',PROJECT_ROOT='$PROJECT_ROOT',RUN_DIR='$RUN_DIR',MANIFEST='$MANIFEST',PROFILE='$PROFILE',CONFIG='$CONFIG_REMOTE' \
     '$SCRIPT'"
 )"
 

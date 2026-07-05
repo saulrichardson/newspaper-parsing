@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -393,6 +394,7 @@ class CommandAdapter:
             "output_path": str(output_path),
             "profile_path": str(profile_path),
             "model_id": self.spec.model_id,
+            "python": sys.executable,
             "width": str(profile.width),
             "height": str(profile.height),
         }

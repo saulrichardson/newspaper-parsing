@@ -7,6 +7,7 @@
 # - RUN_DIR: output run directory, defaults to $BASE/runs/bagging_canary_$SLURM_JOB_ID
 # - MANIFEST: parse input JSONL manifest, defaults to $BASE/fixtures/parse_input.jsonl
 # - PROFILE: baseline|adaptive|full, defaults to full
+# - CONFIG: optional parser-bagging adapter config JSON
 # - NEWSBAG_PY: Python executable. If unset, $BASE/envs/newsbag/bin/python is created/reused.
 
 #SBATCH -A torch_pr_609_general
@@ -25,6 +26,7 @@ PROJECT_ROOT="${PROJECT_ROOT:-$BASE/newspaper-parsing}"
 RUN_DIR="${RUN_DIR:-$BASE/runs/bagging_canary_${SLURM_JOB_ID:-manual}}"
 MANIFEST="${MANIFEST:-$BASE/fixtures/parse_input.jsonl}"
 PROFILE="${PROFILE:-full}"
+CONFIG="${CONFIG:-}"
 BOOTSTRAP_PY="${BOOTSTRAP_PY:-}"
 VENV_DIR="${VENV_DIR:-$BASE/envs/newsbag_py312}"
 NEWSBAG_PY="${NEWSBAG_PY:-$VENV_DIR/bin/python}"
@@ -37,6 +39,9 @@ echo "[bagging-canary] project_root=$PROJECT_ROOT"
 echo "[bagging-canary] run_dir=$RUN_DIR"
 echo "[bagging-canary] manifest=$MANIFEST"
 echo "[bagging-canary] profile=$PROFILE"
+if [ -n "$CONFIG" ]; then
+  echo "[bagging-canary] config=$CONFIG"
+fi
 
 if [ ! -d "$PROJECT_ROOT/src/newsbag" ]; then
   echo "[bagging-canary] ERROR: PROJECT_ROOT does not look like newspaper-parsing: $PROJECT_ROOT" >&2
@@ -128,10 +133,15 @@ PY
 fi
 
 cd "$PROJECT_ROOT"
+EXTRA_ARGS=()
+if [ -n "$CONFIG" ]; then
+  EXTRA_ARGS+=(--config "$CONFIG")
+fi
 "$NEWSBAG_PY" -m newsbag bagging-canary \
   --manifest "$MANIFEST" \
   --run-dir "$RUN_DIR" \
-  --profile "$PROFILE"
+  --profile "$PROFILE" \
+  "${EXTRA_ARGS[@]}"
 
 "$NEWSBAG_PY" - <<PY
 from __future__ import annotations

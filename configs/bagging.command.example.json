@@ -8,7 +8,7 @@
       "profiles": ["external_smoke", "full"],
       "timeout_seconds": 600,
       "command": [
-        "python",
+        "{python}",
         "scripts/my_layout_adapter.py",
         "--page-id",
         "{page_id}",

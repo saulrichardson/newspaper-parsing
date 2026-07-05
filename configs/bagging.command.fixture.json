@@ -1,0 +1,26 @@
+{
+  "include_builtin_adapters": false,
+  "command_adapters": [
+    {
+      "model_id": "fixture_command_v1",
+      "family": "layout",
+      "resource_class": "cpu",
+      "profiles": ["command_fixture"],
+      "timeout_seconds": 60,
+      "command": [
+        "{python}",
+        "scripts/bagging_fixture_adapter.py",
+        "--page-id",
+        "{page_id}",
+        "--model-id",
+        "{model_id}",
+        "--output-json",
+        "{output_path}",
+        "--width",
+        "{width}",
+        "--height",
+        "{height}"
+      ]
+    }
+  ]
+}
