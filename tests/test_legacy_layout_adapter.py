@@ -66,7 +66,7 @@ def test_legacy_converter_runs_as_command_adapter(tmp_path: Path) -> None:
         json.dumps({"page_id": "page-legacy", "image_path": str(image_path), "issue_id": "issue-legacy"}) + "\n",
         encoding="utf-8",
     )
-    legacy_json = tmp_path / "legacy" / "page-legacy.json"
+    legacy_json = image_path.with_suffix(".legacy.json")
     legacy_json.parent.mkdir(parents=True, exist_ok=True)
     legacy_json.write_text(
         json.dumps(
@@ -101,7 +101,7 @@ def test_legacy_converter_runs_as_command_adapter(tmp_path: Path) -> None:
                             sys.executable,
                             str(script),
                             "--input-json",
-                            str(legacy_json),
+                            "{image_dir}/{image_stem}.legacy.json",
                             "--page-id",
                             "{page_id}",
                             "--model-id",

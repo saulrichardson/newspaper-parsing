@@ -25,7 +25,7 @@ Flags:
   --remote-base PATH     Scratch root, default: /scratch/$REMOTE_USER/codex_hpc/parser_bagging
   --account ACCOUNT      Slurm account, default: torch_pr_609_general
   --partition PARTITION  Slurm partition, default: cs
-  --profile PROFILE      baseline|adaptive|full, default: full
+  --profile PROFILE      baseline|adaptive|full|command_fixture|legacy_fixture, default: full
   --config PATH          Optional bagging adapter config, relative to repo or absolute on Torch
   --timeout SECONDS      Poll timeout, default: 900
   --poll SECONDS         Poll interval, default: 10

@@ -1,0 +1,26 @@
+{
+  "include_builtin_adapters": false,
+  "command_adapters": [
+    {
+      "model_id": "legacy_fixture_import",
+      "family": "layout",
+      "resource_class": "cpu",
+      "profiles": ["legacy_fixture"],
+      "timeout_seconds": 60,
+      "command": [
+        "{python}",
+        "scripts/legacy_layout_to_model_output.py",
+        "--input-json",
+        "{image_dir}/{image_stem}.legacy.json",
+        "--page-id",
+        "{page_id}",
+        "--model-id",
+        "{model_id}",
+        "--source-family",
+        "legacy_fixture",
+        "--output-json",
+        "{output_path}"
+      ]
+    }
+  ]
+}

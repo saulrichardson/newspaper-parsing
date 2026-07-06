@@ -30,9 +30,10 @@ newsbag bagging-canary \
 ```
 
 Each command receives formatted arguments such as `{python}`, `{page_id}`,
-`{image_path}`, `{profile_path}`, `{output_path}`, `{run_dir}`, `{repo_root}`,
-`{model_id}`, `{width}`, and `{height}`. The command must write JSON to
-`{output_path}` or print JSON to stdout.
+`{image_path}`, `{image_dir}`, `{image_stem}`, `{image_name}`,
+`{manifest_dir}`, `{profile_path}`, `{output_path}`, `{run_dir}`,
+`{repo_root}`, `{model_id}`, `{width}`, and `{height}`. The command must write
+JSON to `{output_path}` or print JSON to stdout.
 
 Minimal adapter output:
 
@@ -108,4 +109,7 @@ bash scripts/submit_torch_bagging_canary.sh --skip-sync --timeout 1200
 bash scripts/submit_torch_bagging_canary.sh \
   --profile command_fixture \
   --config configs/bagging.command.fixture.json
+bash scripts/submit_torch_bagging_canary.sh \
+  --profile legacy_fixture \
+  --config configs/bagging.legacy.fixture.json
 ```

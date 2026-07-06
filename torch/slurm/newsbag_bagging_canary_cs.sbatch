@@ -132,6 +132,45 @@ print(f"[bagging-canary] wrote {manifest}")
 PY
 fi
 
+if [ "$PROFILE" = "legacy_fixture" ]; then
+  echo "[bagging-canary] creating legacy layout fixture JSON"
+  "$NEWSBAG_PY" - <<PY
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+manifest = Path("$MANIFEST")
+for line in manifest.read_text(encoding="utf-8").splitlines():
+    if not line.strip() or line.lstrip().startswith("#"):
+        continue
+    row = json.loads(line)
+    page_id = str(row["page_id"])
+    image_path = Path(row["image_path"])
+    legacy_path = image_path.with_suffix(".legacy.json")
+    legacy_path.write_text(
+        json.dumps(
+            {
+                "boxes": [
+                    {
+                        "source_family": "legacy_fixture",
+                        "source_model": "legacy_fixture_import",
+                        "source_label": "paragraph",
+                        "bbox_xyxy": [42, 64, 378, 164],
+                        "text": f"legacy fixture transcript for {page_id}",
+                        "reading_order": 1,
+                    }
+                ]
+            },
+            sort_keys=True,
+        )
+        + "\\n",
+        encoding="utf-8",
+    )
+    print(f"[bagging-canary] wrote {legacy_path}")
+PY
+fi
+
 cd "$PROJECT_ROOT"
 EXTRA_ARGS=()
 if [ -n "$CONFIG" ]; then

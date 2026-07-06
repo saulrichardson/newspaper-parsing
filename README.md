@@ -47,6 +47,9 @@ Torch scheduler smoke:
 
 ```bash
 bash scripts/submit_torch_bagging_canary.sh
+bash scripts/submit_torch_bagging_canary.sh \
+  --profile legacy_fixture \
+  --config configs/bagging.legacy.fixture.json
 ```
 
 ## What The System Produces

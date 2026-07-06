@@ -384,11 +384,16 @@ class CommandAdapter:
         output_path: Path,
         profile_path: Path,
     ) -> list[str]:
+        image_path = Path(page.image_path).expanduser().resolve()
         replacements = {
             "page_id": page.page_id,
-            "image_path": str(Path(page.image_path).expanduser().resolve()),
+            "image_path": str(image_path),
+            "image_dir": str(image_path.parent),
+            "image_name": image_path.name,
+            "image_stem": image_path.stem,
             "issue_id": page.issue_id,
             "page_number": "" if page.page_number is None else str(page.page_number),
+            "manifest_dir": str(context.manifest_path.parent),
             "run_dir": str(context.run_dir),
             "repo_root": str(context.repo_root),
             "output_path": str(output_path),
