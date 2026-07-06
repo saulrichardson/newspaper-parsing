@@ -9,13 +9,18 @@ active contract is manifest in, run bundle out:
   IDs, image paths, checksums, and source provenance;
 - parsing profiles each page, runs configurable model adapters, normalizes
   model outputs, fuses regions, writes transcripts and review packets, and
-  records performance/provenance;
+  records input validation, performance, and provenance;
 - analysis consumes fused page contracts and transcripts through evidence-first
   offline retrieval.
 
 Fast local smoke:
 
 ```bash
+newsbag validate-parse-input-manifest \
+  --manifest /path/to/source_artifacts.jsonl \
+  --require-files \
+  --verify-checksums
+
 newsbag bagging-canary \
   --manifest /path/to/source_artifacts.jsonl \
   --run-dir /tmp/newsbag_bagging_canary \

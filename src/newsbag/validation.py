@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -68,6 +69,24 @@ def _path_from_summary(run_dir: Path, summary: dict[str, Any], output_key: str, 
     return fallback
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _status_from_issues(issues: list[dict[str, Any]], *, warnings_are_errors: bool = False) -> str:
+    error_count = sum(1 for issue in issues if issue.get("level") == "error")
+    warning_count = sum(1 for issue in issues if issue.get("level") == "warning")
+    if error_count or (warnings_are_errors and warning_count):
+        return "error"
+    if warning_count:
+        return "warning"
+    return "ok"
+
+
 def _issue(
     issues: list[dict[str, Any]],
     *,
@@ -86,6 +105,186 @@ def _issue(
     if model_id:
         row["model_id"] = model_id
     issues.append(row)
+
+
+def validate_parse_input_manifest(
+    manifest_path: Path,
+    *,
+    require_files: bool = False,
+    require_checksums: bool = False,
+    verify_checksums: bool = False,
+    warnings_are_errors: bool = False,
+) -> dict[str, Any]:
+    manifest = manifest_path.expanduser().resolve()
+    issues: list[dict[str, Any]] = []
+    rows = _read_jsonl(manifest, issues)
+    seen_page_ids: set[str] = set()
+    rows_with_files = 0
+    rows_with_checksums = 0
+    source_systems: set[str] = set()
+
+    for row in rows:
+        page_id = str(row.get("page_id") or "").strip()
+        if not page_id:
+            _issue(
+                issues,
+                level="error",
+                code="missing_page_id",
+                message="manifest row is missing page_id",
+                path=manifest,
+            )
+        elif page_id in seen_page_ids:
+            _issue(
+                issues,
+                level="error",
+                code="duplicate_page_id",
+                message="page_id appears more than once",
+                path=manifest,
+                page_id=page_id,
+            )
+        else:
+            seen_page_ids.add(page_id)
+
+        image_path_raw = str(row.get("image_path") or "").strip()
+        image_path: Path | None = None
+        if not image_path_raw:
+            _issue(
+                issues,
+                level="error",
+                code="missing_image_path",
+                message="manifest row is missing image_path",
+                path=manifest,
+                page_id=page_id,
+            )
+        else:
+            image_path = Path(image_path_raw).expanduser()
+            if not image_path.is_absolute():
+                image_path = (manifest.parent / image_path).resolve()
+            if image_path.is_file():
+                rows_with_files += 1
+            else:
+                _issue(
+                    issues,
+                    level="error" if require_files else "warning",
+                    code="missing_image_file",
+                    message="image_path does not point to an existing file",
+                    path=image_path,
+                    page_id=page_id,
+                )
+
+        page_number = row.get("page_number")
+        if page_number not in (None, ""):
+            try:
+                int(page_number)
+            except (TypeError, ValueError):
+                _issue(
+                    issues,
+                    level="error",
+                    code="invalid_page_number",
+                    message="page_number must be an integer or null",
+                    path=manifest,
+                    page_id=page_id,
+                )
+
+        checksum = str(row.get("checksum_sha256") or "").strip()
+        if checksum:
+            rows_with_checksums += 1
+            if not (len(checksum) == 64 and all(char in "0123456789abcdefABCDEF" for char in checksum)):
+                _issue(
+                    issues,
+                    level="error",
+                    code="invalid_checksum",
+                    message="checksum_sha256 must be a 64-character hex digest",
+                    path=manifest,
+                    page_id=page_id,
+                )
+            elif verify_checksums and image_path is not None and image_path.is_file():
+                actual = _sha256_file(image_path)
+                if actual.lower() != checksum.lower():
+                    _issue(
+                        issues,
+                        level="error",
+                        code="checksum_mismatch",
+                        message="checksum_sha256 does not match image file bytes",
+                        path=image_path,
+                        page_id=page_id,
+                    )
+        elif require_checksums:
+            _issue(
+                issues,
+                level="error",
+                code="missing_checksum",
+                message="manifest row is missing checksum_sha256",
+                path=manifest,
+                page_id=page_id,
+            )
+
+        source = row.get("source")
+        if source is not None:
+            if not isinstance(source, dict):
+                _issue(
+                    issues,
+                    level="error",
+                    code="invalid_source",
+                    message="source must be a JSON object when present",
+                    path=manifest,
+                    page_id=page_id,
+                )
+            else:
+                source_system = str(source.get("source_system") or "").strip()
+                if source_system:
+                    source_systems.add(source_system)
+                else:
+                    _issue(
+                        issues,
+                        level="warning",
+                        code="missing_source_system",
+                        message="source.source_system is empty",
+                        path=manifest,
+                        page_id=page_id,
+                    )
+
+        metadata = row.get("metadata")
+        if metadata is not None and not isinstance(metadata, dict):
+            _issue(
+                issues,
+                level="error",
+                code="invalid_metadata",
+                message="metadata must be a JSON object when present",
+                path=manifest,
+                page_id=page_id,
+            )
+
+    if not rows:
+        _issue(
+            issues,
+            level="error",
+            code="empty_manifest",
+            message="parse input manifest contains no rows",
+            path=manifest,
+        )
+
+    error_count = sum(1 for issue in issues if issue.get("level") == "error")
+    warning_count = sum(1 for issue in issues if issue.get("level") == "warning")
+    return {
+        "contract": "parse-input-manifest-validation-v1",
+        "status": _status_from_issues(issues, warnings_are_errors=warnings_are_errors),
+        "manifest_path": str(manifest),
+        "counts": {
+            "rows": len(rows),
+            "unique_page_ids": len(seen_page_ids),
+            "rows_with_files": rows_with_files,
+            "rows_with_checksums": rows_with_checksums,
+            "source_systems": len(source_systems),
+            "errors": error_count,
+            "warnings": warning_count,
+        },
+        "source_systems": sorted(source_systems),
+        "require_files": require_files,
+        "require_checksums": require_checksums,
+        "verify_checksums": verify_checksums,
+        "issues": issues,
+    }
 
 
 def _validate_region(
@@ -356,6 +555,7 @@ def validate_bagging_run(run_dir: Path) -> dict[str, Any]:
     performance_rows = _read_jsonl(root / "reports" / "performance.jsonl", issues)
     performance_json = _read_json(root / "reports" / "performance.json", issues)
     provenance_json = _read_json(root / "provenance.json", issues)
+    input_manifest_validation = _read_json(root / "reports" / "input_manifest_validation.json", issues)
 
     model_ids = [str(item) for item in summary.get("model_ids", []) if str(item)]
     page_ids = [str(row.get("page_id") or "") for row in manifest_rows if str(row.get("page_id") or "")]
@@ -426,6 +626,22 @@ def validate_bagging_run(run_dir: Path) -> dict[str, Any]:
             code="invalid_provenance",
             message="provenance.json must be an object",
             path=root / "provenance.json",
+        )
+    if not isinstance(input_manifest_validation, dict):
+        _issue(
+            issues,
+            level="error",
+            code="invalid_input_manifest_validation",
+            message="reports/input_manifest_validation.json must be an object",
+            path=root / "reports" / "input_manifest_validation.json",
+        )
+    elif input_manifest_validation.get("status") not in ("ok", "warning"):
+        _issue(
+            issues,
+            level="error",
+            code="input_manifest_validation_failed",
+            message=f"input manifest validation status is {input_manifest_validation.get('status')}",
+            path=root / "reports" / "input_manifest_validation.json",
         )
 
     fused_count = 0
@@ -516,6 +732,7 @@ def validate_bagging_run(run_dir: Path) -> dict[str, Any]:
             "performance_jsonl": str(root / "reports" / "performance.jsonl"),
             "errors_jsonl": str(root / "errors.jsonl"),
             "provenance_json": str(root / "provenance.json"),
+            "input_manifest_validation_json": str(root / "reports" / "input_manifest_validation.json"),
         },
         "issues": issues,
     }
@@ -525,10 +742,15 @@ def format_validation_text(report: dict[str, Any]) -> str:
     counts = report.get("counts") if isinstance(report.get("counts"), dict) else {}
     lines = [
         f"status: {report.get('status')}",
-        f"run_dir: {report.get('run_dir')}",
+        f"run_dir: {report.get('run_dir') or report.get('manifest_path') or report.get('output_jsonl')}",
         "counts:",
     ]
-    for key in (
+    preferred_keys = (
+        "rows",
+        "unique_page_ids",
+        "rows_with_files",
+        "rows_with_checksums",
+        "source_systems",
         "pages_manifest",
         "pages_completed",
         "models",
@@ -541,9 +763,12 @@ def format_validation_text(report: dict[str, Any]) -> str:
         "page_errors",
         "errors",
         "warnings",
-    ):
+    )
+    for key in preferred_keys:
         if key in counts:
             lines.append(f"  {key}: {counts[key]}")
+    for key in sorted(set(counts) - set(preferred_keys)):
+        lines.append(f"  {key}: {counts[key]}")
     issues = report.get("issues") if isinstance(report.get("issues"), list) else []
     if issues:
         lines.append("issues:")

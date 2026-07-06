@@ -48,7 +48,10 @@ def test_bagging_canary_writes_contract_artifacts(tmp_path: Path) -> None:
     assert (run_dir / "outputs" / "fused_pages" / "page-001.json").exists()
     assert (run_dir / "outputs" / "transcripts" / "page-001.txt").exists()
     assert (run_dir / "reports" / "performance.json").exists()
+    assert (run_dir / "reports" / "input_manifest_validation.json").exists()
     assert (run_dir / "provenance.json").exists()
+    provenance = json.loads((run_dir / "provenance.json").read_text(encoding="utf-8"))
+    assert provenance["input_manifest_validation_status"] == "ok"
     fused = json.loads((run_dir / "outputs" / "fused_pages" / "page-001.json").read_text(encoding="utf-8"))
     assert fused["model_ids"] == ["baseline_geometry_v1", "column_detector_v1", "legal_notice_probe_v1"]
     assert fused["quality"]["region_count"] >= 3

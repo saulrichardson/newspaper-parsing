@@ -10,13 +10,27 @@ The new forward-looking contract is:
 2. parsing runs configurable model adapters over those pages;
 3. each adapter emits normalized model output;
 4. fusion emits canonical page layouts, transcripts, quality scores, review
-   packets, performance metrics, and provenance.
+   packets, input validation, performance metrics, and provenance.
 
 The initial `newsbag bagging-canary` command is intentionally lightweight. It
 uses deterministic CPU adapters so local tests and Torch Slurm canaries validate
 the infrastructure without requiring a full OCR/VLM production run.
 
 ## Command Adapters
+
+Validate a parse input manifest before running model work:
+
+```bash
+newsbag validate-parse-input-manifest \
+  --manifest /path/to/source_artifacts.jsonl \
+  --require-files \
+  --verify-checksums \
+  --output-json /tmp/source_artifacts.validation.json
+```
+
+The same validation report is written into every canary run under
+`reports/input_manifest_validation.json`; `newsbag validate-run` treats an
+errored input manifest report as a failed run bundle.
 
 The bagging canary can now load a JSON config that registers command-backed
 adapters:
@@ -118,7 +132,8 @@ newsbag validate-run \
   --output-json /tmp/newsbag_bagging_canary/reports/validation.json
 ```
 
-The validator checks the copied parse manifest, `summary.json`,
+The validator checks the copied parse manifest,
+`reports/input_manifest_validation.json`, `summary.json`,
 `provenance.json`, performance reports, `errors.jsonl`, every expected model
 output, fused page JSON, transcript file, region bounding boxes, model IDs, and
 page counts. The Torch Slurm canary writes this validation report into

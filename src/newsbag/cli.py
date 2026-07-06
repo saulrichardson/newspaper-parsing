@@ -11,7 +11,11 @@ from newsbag.bagging import run_bagging_canary
 from newsbag.legacy_run import LEGACY_SOURCE_ROOTS, write_legacy_bagging_config
 from newsbag.pipeline import run_pipeline
 from newsbag.status import format_summary_text, summarize_run
-from newsbag.validation import format_validation_text, validate_bagging_run
+from newsbag.validation import (
+    format_validation_text,
+    validate_bagging_run,
+    validate_parse_input_manifest,
+)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -68,6 +72,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Model bag profile.",
     )
 
+    manp = sub.add_parser("validate-parse-input-manifest", help="Validate a parser parse-input/source-artifact manifest.")
+    manp.add_argument("--manifest", required=True, help="Parse input JSONL manifest.")
+    manp.add_argument("--json", action="store_true", help="Emit JSON instead of human-readable text.")
+    manp.add_argument("--output-json", default="", help="Optional path to write the validation report JSON.")
+    manp.add_argument("--require-files", action="store_true", help="Fail when image_path files are missing.")
+    manp.add_argument("--require-checksums", action="store_true", help="Fail when checksum_sha256 is empty.")
+    manp.add_argument("--verify-checksums", action="store_true", help="Compare checksum_sha256 to image file bytes.")
+    manp.add_argument("--strict", action="store_true", help="Return nonzero for warnings as well as errors.")
+
     legp = sub.add_parser(
         "legacy-run-config",
         help="Build a parser-bagging command-adapter config from a legacy newsbag run directory.",
@@ -123,6 +136,26 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(bundle.performance | {"run_dir": bundle.run_dir}, indent=2, sort_keys=True))
         return 1 if int(bundle.performance.get("errors", 0) or 0) else 0
+
+    if args.command == "validate-parse-input-manifest":
+        report = validate_parse_input_manifest(
+            Path(args.manifest),
+            require_files=bool(args.require_files),
+            require_checksums=bool(args.require_checksums),
+            verify_checksums=bool(args.verify_checksums),
+            warnings_are_errors=bool(args.strict),
+        )
+        if str(args.output_json).strip():
+            output_path = Path(args.output_json).expanduser().resolve()
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        if bool(args.json):
+            print(json.dumps(report, indent=2, sort_keys=True))
+        else:
+            print(format_validation_text(report), end="")
+        if report["status"] == "error" or (bool(args.strict) and report["status"] != "ok"):
+            return 1
+        return 0
 
     if args.command == "legacy-run-config":
         summary = write_legacy_bagging_config(

@@ -25,6 +25,7 @@ from newsbag.contracts import (
     write_json,
     write_jsonl,
 )
+from newsbag.validation import validate_parse_input_manifest
 
 
 @dataclass(frozen=True)
@@ -525,6 +526,11 @@ def run_bagging_canary(
     manifest_path = manifest_path.expanduser().resolve()
     run_dir = run_dir.expanduser().resolve()
     repo_root = repo_root or Path.cwd().resolve()
+    manifest_validation = validate_parse_input_manifest(manifest_path, require_files=True)
+    write_json(run_dir / "reports" / "input_manifest_validation.json", manifest_validation)
+    if manifest_validation["status"] == "error":
+        report_path = run_dir / "reports" / "input_manifest_validation.json"
+        raise ValueError(f"parse input manifest validation failed: {report_path}")
     pages = read_parse_input_manifest(manifest_path)
     if not pages:
         raise ValueError(f"parse input manifest is empty: {manifest_path}")
@@ -615,6 +621,8 @@ def run_bagging_canary(
             "repo_commit": _git_commit(repo_root),
             "contract_version": "parser-bagging-v1",
             "bagging_config": str(config_path.expanduser().resolve()) if config_path is not None else "",
+            "input_manifest_validation": str(run_dir / "reports" / "input_manifest_validation.json"),
+            "input_manifest_validation_status": manifest_validation["status"],
         },
     )
     write_json(run_dir / "summary.json", bundle)
