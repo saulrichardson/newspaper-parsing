@@ -182,6 +182,11 @@ fi
   --profile "$PROFILE" \
   "${EXTRA_ARGS[@]}"
 
+"$NEWSBAG_PY" -m newsbag validate-run \
+  --run-dir "$RUN_DIR" \
+  --output-json "$RUN_DIR/reports/validation.json" \
+  --json
+
 "$NEWSBAG_PY" - <<PY
 from __future__ import annotations
 
@@ -190,16 +195,21 @@ from pathlib import Path
 
 run_dir = Path("$RUN_DIR")
 summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+validation = json.loads((run_dir / "reports" / "validation.json").read_text(encoding="utf-8"))
 errors = [
     json.loads(line)
     for line in (run_dir / "errors.jsonl").read_text(encoding="utf-8").splitlines()
     if line.strip()
 ]
+status_ok = summary["performance"]["errors"] == 0 and validation["status"] == "ok"
 status = {
-    "status": "ok" if summary["performance"]["errors"] == 0 else "error",
+    "status": "ok" if status_ok else "error",
     "run_dir": str(run_dir),
     "summary_path": str(run_dir / "summary.json"),
     "performance_path": str(run_dir / "reports" / "performance.json"),
+    "validation_path": str(run_dir / "reports" / "validation.json"),
+    "validation_status": validation["status"],
+    "validation_issue_count": len(validation.get("issues") or []),
     "errors_path": str(run_dir / "errors.jsonl"),
     "pages_completed": summary["performance"]["pages_completed"],
     "errors": errors,

@@ -20,6 +20,9 @@ newsbag bagging-canary \
   --manifest /path/to/source_artifacts.jsonl \
   --run-dir /tmp/newsbag_bagging_canary \
   --profile full
+
+newsbag validate-run \
+  --run-dir /tmp/newsbag_bagging_canary
 ```
 
 External model smoke:

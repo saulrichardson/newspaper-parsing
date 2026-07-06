@@ -108,6 +108,23 @@ Generated adapters use `--allow-missing` by default so a page missing one
 legacy model output emits an empty skipped `ModelOutput` instead of failing the
 entire page. Use `--strict-missing` if missing source outputs should fail fast.
 
+## Run Validation
+
+Every parser-bagging run can be validated as a run bundle:
+
+```bash
+newsbag validate-run \
+  --run-dir /tmp/newsbag_bagging_canary \
+  --output-json /tmp/newsbag_bagging_canary/reports/validation.json
+```
+
+The validator checks the copied parse manifest, `summary.json`,
+`provenance.json`, performance reports, `errors.jsonl`, every expected model
+output, fused page JSON, transcript file, region bounding boxes, model IDs, and
+page counts. The Torch Slurm canary writes this validation report into
+`reports/validation.json` and includes the validation status in
+`slurm_status.json`.
+
 ## Torch Canary
 
 From the local repo:
