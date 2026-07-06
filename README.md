@@ -32,6 +32,17 @@ newsbag bagging-canary \
   --config configs/bagging.command.example.json
 ```
 
+Import legacy model outputs into the new bagging contract:
+
+```bash
+python scripts/legacy_layout_to_model_output.py \
+  --input-json /path/to/legacy-normalized/page-001.json \
+  --page-id page-001 \
+  --model-id legacy_paddle_layout_v1 \
+  --source-family paddle \
+  --output-json /tmp/page-001.model_output.json
+```
+
 Torch scheduler smoke:
 
 ```bash

@@ -56,6 +56,36 @@ This is the intended bridge for real model work: Paddle, Dell, MinerU, or a
 local VLM/OCR runner can be wrapped as command adapters first, then promoted to
 native Python adapters only if that removes real operational friction.
 
+## Importing Legacy Model Outputs
+
+Existing Paddle, Dell, and MinerU runs can be brought into the new bagging
+contract without rerunning the model. The converter accepts the older normalized
+layout shapes (`boxes`, `regions`, `candidates`, nested `res.boxes`, or
+page-level `pages`) and emits a `ModelOutput` JSON file:
+
+```bash
+python scripts/legacy_layout_to_model_output.py \
+  --input-json /path/to/legacy-normalized/page-001.json \
+  --page-id page-001 \
+  --model-id legacy_paddle_layout_v1 \
+  --source-family paddle \
+  --output-json /tmp/page-001.model_output.json
+```
+
+The same converter can be registered as a command adapter:
+
+```bash
+newsbag bagging-canary \
+  --manifest /path/to/source_artifacts.jsonl \
+  --run-dir /tmp/newsbag_legacy_import \
+  --profile legacy_import \
+  --config configs/bagging.legacy-output.example.json
+```
+
+This is the fastest path for comparing old experiments inside the new fusion
+and provenance layer. Live GPU-backed adapters can replace these imports later
+without changing the run bundle contract.
+
 ## Torch Canary
 
 From the local repo:

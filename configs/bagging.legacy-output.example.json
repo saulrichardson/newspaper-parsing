@@ -1,0 +1,26 @@
+{
+  "include_builtin_adapters": false,
+  "command_adapters": [
+    {
+      "model_id": "legacy_paddle_layout_v1",
+      "family": "layout",
+      "resource_class": "cpu",
+      "profiles": ["legacy_import", "full"],
+      "timeout_seconds": 120,
+      "command": [
+        "{python}",
+        "scripts/legacy_layout_to_model_output.py",
+        "--input-json",
+        "/path/to/legacy-normalized/{page_id}.json",
+        "--page-id",
+        "{page_id}",
+        "--model-id",
+        "{model_id}",
+        "--source-family",
+        "paddle",
+        "--output-json",
+        "{output_path}"
+      ]
+    }
+  ]
+}
