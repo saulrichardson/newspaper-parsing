@@ -87,6 +87,27 @@ This is the fastest path for comparing old experiments inside the new fusion
 and provenance layer. Live GPU-backed adapters can replace these imports later
 without changing the run bundle contract.
 
+For a full old `newsbag run`, generate the adapter config instead of writing it
+by hand:
+
+```bash
+newsbag legacy-run-config \
+  --legacy-run-dir /path/to/old/run \
+  --output-config /tmp/legacy-bagging.json \
+  --output-summary /tmp/legacy-bagging.summary.json \
+  --profile legacy_import
+```
+
+The generated adapters scan the legacy source layout:
+
+```text
+outputs/sources/{paddle_layout,paddle_vl15,dell,mineru}/<variant>/<page_slug>/layout_boxes.normalized.json
+```
+
+Generated adapters use `--allow-missing` by default so a page missing one
+legacy model output emits an empty skipped `ModelOutput` instead of failing the
+entire page. Use `--strict-missing` if missing source outputs should fail fast.
+
 ## Torch Canary
 
 From the local repo:

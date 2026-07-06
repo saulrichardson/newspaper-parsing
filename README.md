@@ -43,6 +43,21 @@ python scripts/legacy_layout_to_model_output.py \
   --output-json /tmp/page-001.model_output.json
 ```
 
+Build a full adapter config from an old `newsbag run` directory:
+
+```bash
+newsbag legacy-run-config \
+  --legacy-run-dir /path/to/old/run \
+  --output-config /tmp/legacy-bagging.json \
+  --profile legacy_import
+
+newsbag bagging-canary \
+  --manifest /path/to/source_artifacts.jsonl \
+  --run-dir /tmp/newsbag_legacy_import \
+  --profile legacy_import \
+  --config /tmp/legacy-bagging.json
+```
+
 Torch scheduler smoke:
 
 ```bash

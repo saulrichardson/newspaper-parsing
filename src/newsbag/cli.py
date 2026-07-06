@@ -8,6 +8,7 @@ from pathlib import Path
 
 from newsbag.config import load_config
 from newsbag.bagging import run_bagging_canary
+from newsbag.legacy_run import LEGACY_SOURCE_ROOTS, write_legacy_bagging_config
 from newsbag.pipeline import run_pipeline
 from newsbag.status import format_summary_text, summarize_run
 
@@ -65,6 +66,26 @@ def _build_parser() -> argparse.ArgumentParser:
         default="adaptive",
         help="Model bag profile.",
     )
+
+    legp = sub.add_parser(
+        "legacy-run-config",
+        help="Build a parser-bagging command-adapter config from a legacy newsbag run directory.",
+    )
+    legp.add_argument("--legacy-run-dir", required=True, help="Legacy newsbag run directory.")
+    legp.add_argument("--output-config", required=True, help="Output parser-bagging adapter config JSON.")
+    legp.add_argument("--output-summary", default="", help="Optional discovery summary JSON path.")
+    legp.add_argument("--profile", default="legacy_import", help="Profile name to attach to generated adapters.")
+    legp.add_argument(
+        "--source-root",
+        action="append",
+        choices=sorted(LEGACY_SOURCE_ROOTS),
+        help="Limit discovery to one source root. May be passed more than once.",
+    )
+    legp.add_argument(
+        "--strict-missing",
+        action="store_true",
+        help="Do not add --allow-missing to generated adapters.",
+    )
     return p
 
 
@@ -91,6 +112,18 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(bundle.performance | {"run_dir": bundle.run_dir}, indent=2, sort_keys=True))
         return 1 if int(bundle.performance.get("errors", 0) or 0) else 0
+
+    if args.command == "legacy-run-config":
+        summary = write_legacy_bagging_config(
+            legacy_run_dir=Path(args.legacy_run_dir),
+            output_config=Path(args.output_config),
+            output_summary=Path(args.output_summary) if str(args.output_summary).strip() else None,
+            profile_name=str(args.profile),
+            source_roots=args.source_root,
+            allow_missing=not bool(args.strict_missing),
+        )
+        print(json.dumps(summary, indent=2, sort_keys=True))
+        return 0
 
     if args.command != "run":
         raise ValueError(f"Unsupported command: {args.command}")

@@ -35,6 +35,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-family", default="")
     parser.add_argument("--resource-class", default="cpu")
     parser.add_argument("--default-confidence", type=float, default=0.5)
+    parser.add_argument(
+        "--allow-missing",
+        action="store_true",
+        help="Emit an empty skipped ModelOutput instead of failing when an input JSON is missing.",
+    )
     return parser.parse_args()
 
 
@@ -43,11 +48,17 @@ def main() -> int:
     started = time.perf_counter()
     regions: list[dict] = []
     input_paths: list[str] = []
+    missing_paths: list[str] = []
     input_region_count = 0
     for input_json in args.input_json:
         input_path = input_json.expanduser().resolve()
-        payload = read_legacy_json(input_path)
         input_paths.append(str(input_path))
+        if not input_path.exists():
+            if not args.allow_missing:
+                raise FileNotFoundError(f"legacy input JSON not found: {input_path}")
+            missing_paths.append(str(input_path))
+            continue
+        payload = read_legacy_json(input_path)
         records = extract_legacy_box_records(payload, page_id=str(args.page_id))
         input_region_count += len(records)
         regions.extend(
@@ -71,6 +82,8 @@ def main() -> int:
         started=started,
         default_confidence=float(args.default_confidence),
         input_region_count=input_region_count,
+        runtime_status="skipped" if missing_paths and not regions else "ok",
+        missing_input_paths=missing_paths,
     )
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
     args.output_json.write_text(json.dumps(output, indent=2, sort_keys=True) + "\n", encoding="utf-8")

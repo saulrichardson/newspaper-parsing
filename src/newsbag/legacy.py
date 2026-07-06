@@ -222,10 +222,13 @@ def build_legacy_model_output(
     started: float | None = None,
     default_confidence: float = 0.5,
     input_region_count: int | None = None,
+    runtime_status: str = "ok",
+    missing_input_paths: list[str] | None = None,
 ) -> dict[str, Any]:
     elapsed = time.perf_counter() - started if started is not None else 0.0
     paths = input_paths or []
     observed_count = len(regions) if input_region_count is None else int(input_region_count)
+    missing_paths = missing_input_paths or []
     return {
         "page_id": page_id,
         "model_id": model_id,
@@ -233,11 +236,12 @@ def build_legacy_model_output(
         "runtime": {
             "seconds": round(elapsed, 6),
             "resource_class": resource_class,
-            "status": "ok",
+            "status": runtime_status,
             "metadata": {
                 "source_adapter_kind": "legacy_layout_import",
                 "source_family": source_family,
                 "input_paths": paths,
+                "missing_input_paths": missing_paths,
                 "input_region_count": observed_count,
                 "emitted_region_count": len(regions),
                 "skipped_region_count": max(0, observed_count - len(regions)),
