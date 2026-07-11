@@ -11,7 +11,7 @@
 # - NEWSBAG_PY: Python executable. If unset, $BASE/envs/newsbag/bin/python is created/reused.
 
 #SBATCH -A torch_pr_609_general
-#SBATCH -p cs
+#SBATCH -p cpu_short
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=4G
 #SBATCH --time=00:10:00
@@ -172,6 +172,11 @@ PY
 fi
 
 cd "$PROJECT_ROOT"
+"$NEWSBAG_PY" -m pytest -q \
+  tests/test_bagging.py \
+  tests/test_performance.py \
+  tests/test_validation.py
+
 EXTRA_ARGS=()
 if [ -n "$CONFIG" ]; then
   EXTRA_ARGS+=(--config "$CONFIG")
@@ -196,17 +201,37 @@ from pathlib import Path
 run_dir = Path("$RUN_DIR")
 summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
 validation = json.loads((run_dir / "reports" / "validation.json").read_text(encoding="utf-8"))
+plan = json.loads((run_dir / "reports" / "plan_summary.json").read_text(encoding="utf-8"))
+performance = json.loads((run_dir / "reports" / "performance_summary.json").read_text(encoding="utf-8"))
 errors = [
     json.loads(line)
     for line in (run_dir / "errors.jsonl").read_text(encoding="utf-8").splitlines()
     if line.strip()
 ]
-status_ok = summary["performance"]["errors"] == 0 and validation["status"] == "ok"
+coverage = performance.get("coverage") or {}
+status_ok = all(
+    (
+        summary["performance"]["errors"] == 0,
+        validation["status"] == "ok",
+        plan.get("contract") == "parser-model-plan-summary-v1",
+        plan.get("pages_planned") == summary["page_count"],
+        performance.get("contract") == "parser-performance-summary-v1",
+        coverage.get("planned_invocations") == coverage.get("observed_invocations"),
+        coverage.get("missing_invocations") == 0,
+        coverage.get("unexpected_invocations") == 0,
+    )
+)
 status = {
     "status": "ok" if status_ok else "error",
     "run_dir": str(run_dir),
     "summary_path": str(run_dir / "summary.json"),
     "performance_path": str(run_dir / "reports" / "performance.json"),
+    "performance_summary_path": str(run_dir / "reports" / "performance_summary.json"),
+    "model_plan_path": str(run_dir / "manifests" / "model_plan.jsonl"),
+    "plan_summary_path": str(run_dir / "reports" / "plan_summary.json"),
+    "adapter_invocations_planned": plan.get("adapter_invocations_planned"),
+    "adapter_invocations_observed": coverage.get("observed_invocations"),
+    "performance_coverage_ratio": coverage.get("coverage_ratio"),
     "validation_path": str(run_dir / "reports" / "validation.json"),
     "validation_status": validation["status"],
     "validation_issue_count": len(validation.get("issues") or []),

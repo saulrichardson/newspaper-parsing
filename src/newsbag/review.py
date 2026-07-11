@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import json
 import shutil
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import Iterable, List, Tuple
 
 from PIL import Image, ImageDraw
 

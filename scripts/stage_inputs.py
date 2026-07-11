@@ -12,7 +12,7 @@ _SRC = _REPO_ROOT / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from newsbag.input_staging import stage_inputs_to_manifest
+from newsbag.input_staging import stage_inputs_to_manifest  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:

@@ -1,9 +1,17 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
+
+
+ARTIFACT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
+
+
+def is_safe_artifact_id(value: str) -> bool:
+    return bool(ARTIFACT_ID_PATTERN.fullmatch(value)) and ".." not in value
 
 
 @dataclass(frozen=True)
@@ -35,6 +43,25 @@ class PageProfile:
     dark_pixel_share: float
     estimated_complexity: str
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class PlannedModel:
+    model_id: str
+    family: str
+    resource_class: str
+
+
+@dataclass(frozen=True)
+class PageModelPlan:
+    contract: str
+    page_id: str
+    profile_name: str
+    estimated_complexity: str
+    models: list[PlannedModel]
+    resource_classes: list[str]
+    routing_reason: str
+    profile: PageProfile
 
 
 @dataclass(frozen=True)
@@ -125,8 +152,9 @@ def read_json(path: Path) -> Any:
 
 
 def read_parse_input_manifest(path: Path) -> list[ParseInputPage]:
+    manifest_path = path.expanduser().resolve()
     pages: list[ParseInputPage] = []
-    with path.open("r", encoding="utf-8") as handle:
+    with manifest_path.open("r", encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, start=1):
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
@@ -147,11 +175,14 @@ def read_parse_input_manifest(path: Path) -> list[ParseInputPage]:
                 raise ValueError(f"manifest row {line_number} is missing page_id")
             if not image_path:
                 raise ValueError(f"manifest row {line_number} is missing image_path")
+            resolved_image_path = Path(image_path).expanduser()
+            if not resolved_image_path.is_absolute():
+                resolved_image_path = manifest_path.parent / resolved_image_path
             page_number_raw = row.get("page_number")
             pages.append(
                 ParseInputPage(
                     page_id=page_id,
-                    image_path=image_path,
+                    image_path=str(resolved_image_path.resolve()),
                     issue_id=str(row.get("issue_id") or ""),
                     page_number=int(page_number_raw) if page_number_raw not in (None, "") else None,
                     source=source,

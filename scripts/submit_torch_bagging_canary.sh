@@ -6,7 +6,7 @@ set -euo pipefail
 
 REMOTE="${REMOTE:-torch}"
 ACCOUNT="${ACCOUNT:-torch_pr_609_general}"
-PARTITION="${PARTITION:-cs}"
+PARTITION="${PARTITION:-cpu_short}"
 PROFILE="${PROFILE:-full}"
 CONFIG="${CONFIG:-}"
 REMOTE_BASE="${REMOTE_BASE:-}"
@@ -24,7 +24,7 @@ Flags:
   --remote HOST          SSH host, default: torch
   --remote-base PATH     Scratch root, default: /scratch/$REMOTE_USER/codex_hpc/parser_bagging
   --account ACCOUNT      Slurm account, default: torch_pr_609_general
-  --partition PARTITION  Slurm partition, default: cs
+  --partition PARTITION  Slurm partition, default: cpu_short
   --profile PROFILE      baseline|adaptive|full|command_fixture|legacy_fixture, default: full
   --config PATH          Optional bagging adapter config, relative to repo or absolute on Torch
   --timeout SECONDS      Poll timeout, default: 900
@@ -106,7 +106,7 @@ fi
 PROJECT_ROOT="$REMOTE_BASE/newspaper-parsing"
 RUN_DIR="$REMOTE_BASE/runs/bagging_canary_$(date -u +%Y%m%d_%H%M%S)"
 MANIFEST="$REMOTE_BASE/fixtures/parse_input.jsonl"
-SCRIPT="torch/slurm/newsbag_bagging_canary_cs.sbatch"
+SCRIPT="torch/slurm/newsbag_bagging_canary_cpu_short.sbatch"
 CONFIG_REMOTE=""
 if [[ -n "$CONFIG" ]]; then
   if [[ "$CONFIG" = /* ]]; then
@@ -142,8 +142,17 @@ if [[ "$SKIP_SYNC" -eq 0 ]]; then
     --exclude '__pycache__/' \
     --exclude '*.pyc' \
     --exclude '.venv/' \
+    --exclude 'build/' \
+    --exclude 'dist/' \
+    --exclude '*.egg-info/' \
     --exclude 'runs/' \
+    --exclude '_archive/' \
+    --exclude '_reference/' \
     --exclude 'local-archive/' \
+    --exclude '.DS_Store' \
+    --exclude '*.aux' \
+    --exclude '*.log' \
+    --exclude '*.out' \
     ./ "$REMOTE:$PROJECT_ROOT/"
 fi
 
@@ -178,6 +187,10 @@ if [[ "$SECONDS" -ge "$deadline" ]]; then
   exit 3
 fi
 
+SLURM_RESULT="$(ssh "$REMOTE" "sacct -n -X -j '$JOB_ID' --format=State,ExitCode -P 2>/dev/null | head -1 || true")"
+echo "[result] slurm=${SLURM_RESULT:-unknown}"
+
+set +e
 ssh "$REMOTE" "python3 - <<PY
 from __future__ import annotations
 
@@ -196,3 +209,12 @@ else:
     print(json.dumps({'status': 'missing_outputs', 'run_dir': str(run_dir)}, indent=2, sort_keys=True))
     raise SystemExit(1)
 PY"
+RESULT_CODE=$?
+set -e
+if [[ "$RESULT_CODE" -ne 0 ]]; then
+  echo "[result] stdout tail" >&2
+  ssh "$REMOTE" "tail -80 '$REMOTE_BASE/logs/newsbag_bagging_canary-$JOB_ID.out' 2>/dev/null || true" >&2
+  echo "[result] stderr tail" >&2
+  ssh "$REMOTE" "tail -80 '$REMOTE_BASE/logs/newsbag_bagging_canary-$JOB_ID.err' 2>/dev/null || true" >&2
+  exit "$RESULT_CODE"
+fi

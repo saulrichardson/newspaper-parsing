@@ -6,10 +6,12 @@ import os
 import sys
 from pathlib import Path
 
+from newsbag import __version__
 from newsbag.config import load_config
-from newsbag.bagging import run_bagging_canary
+from newsbag.bagging import plan_bagging, run_bagging_canary
 from newsbag.legacy_run import LEGACY_SOURCE_ROOTS, write_legacy_bagging_config
 from newsbag.pipeline import run_pipeline
+from newsbag.performance import write_bagging_performance_summary
 from newsbag.status import format_summary_text, summarize_run
 from newsbag.validation import (
     format_validation_text,
@@ -21,8 +23,9 @@ from newsbag.validation import (
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="newsbag",
-        description="Newspaper layout bagging pipeline (Paddle4 + Dell + MinerU).",
+        description="Manifest-driven newspaper layout, OCR model bagging, fusion, and transcripts.",
     )
+    p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="command", required=True)
 
     runp = sub.add_parser("run", help="Run the full end-to-end layout + transcription pipeline.")
@@ -70,6 +73,20 @@ def _build_parser() -> argparse.ArgumentParser:
         "--profile",
         default="adaptive",
         help="Model bag profile.",
+    )
+
+    planp = sub.add_parser("plan-bagging", help="Profile pages and write a model plan without running adapters.")
+    planp.add_argument("--manifest", required=True, help="Parse input JSONL manifest.")
+    planp.add_argument("--run-dir", required=True, help="Output run-planning directory.")
+    planp.add_argument("--config", default="", help="Optional parser-bagging adapter config JSON.")
+    planp.add_argument("--profile", default="adaptive", help="Model bag profile.")
+
+    perfp = sub.add_parser("summarize-performance", help="Rebuild a run's aggregate performance report.")
+    perfp.add_argument("--run-dir", required=True, help="Parser run directory.")
+    perfp.add_argument(
+        "--output-json",
+        default="",
+        help="Optional output path. Default: RUN_DIR/reports/performance_summary.json",
     )
 
     manp = sub.add_parser("validate-parse-input-manifest", help="Validate a parser parse-input/source-artifact manifest.")
@@ -136,6 +153,24 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(bundle.performance | {"run_dir": bundle.run_dir}, indent=2, sort_keys=True))
         return 1 if int(bundle.performance.get("errors", 0) or 0) else 0
+
+    if args.command == "plan-bagging":
+        summary = plan_bagging(
+            manifest_path=Path(args.manifest),
+            run_dir=Path(args.run_dir),
+            profile_name=str(args.profile),
+            config_path=Path(args.config) if str(args.config).strip() else None,
+        )
+        print(json.dumps(summary, indent=2, sort_keys=True))
+        return 0
+
+    if args.command == "summarize-performance":
+        report = write_bagging_performance_summary(
+            Path(args.run_dir),
+            Path(args.output_json) if str(args.output_json).strip() else None,
+        )
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
 
     if args.command == "validate-parse-input-manifest":
         report = validate_parse_input_manifest(

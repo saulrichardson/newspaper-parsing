@@ -6,6 +6,7 @@
       "family": "layout",
       "resource_class": "cpu",
       "profiles": ["external_smoke", "full"],
+      "complexities": ["easy", "medium", "hard"],
       "timeout_seconds": 600,
       "command": [
         "{python}",

@@ -6,7 +6,7 @@ import os
 from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Dict, Iterable, List
+from typing import Dict, List
 
 from newsbag.config import DellConfig, MinerConfig
 from newsbag.labels import label_counts, normalize_label

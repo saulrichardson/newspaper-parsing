@@ -1,319 +1,276 @@
 # newspaper-parsing
 
-Corpus-scale newspaper page parsing for scanned page images. The system runs several layout parsers over the same page, normalizes their outputs into one box schema, fuses them into cleaner page structure, generates review artifacts, and produces reading-order transcripts from fused regions.
+[![CI](https://github.com/saulrichardson/newspaper-parsing/actions/workflows/ci.yml/badge.svg)](https://github.com/saulrichardson/newspaper-parsing/actions/workflows/ci.yml)
 
-This branch is the breaking, forward-looking parser-bagging refactor. The
-active contract is manifest in, run bundle out:
+Manifest-driven infrastructure for newspaper layout detection, OCR model
+bagging, region fusion, transcript construction, and quality review. The
+`newsbag` package turns a page-image manifest into a validated run bundle with
+per-model outputs, fused pages, transcripts, provenance, execution errors, and
+performance reports.
 
-- acquisition emits parser-ready source artifact JSONL rows with stable page
-  IDs, image paths, checksums, and source provenance;
-- parsing profiles each page, runs configurable model adapters, normalizes
-  model outputs, fuses regions, writes transcripts and review packets, and
-  records input validation, performance, and provenance;
-- analysis consumes fused page contracts and transcripts through evidence-first
-  offline retrieval.
+The orchestration layer is model-agnostic. Built-in deterministic adapters make
+the full contract testable on a laptop; command adapters connect the same
+pipeline to PaddleOCR, Dell/American Stories, MinerU, local vision-language
+models, or other CPU/GPU executables. No hosted model or API key is required.
 
-Fast local smoke:
+## Core Properties
 
-```bash
-newsbag validate-parse-input-manifest \
-  --manifest /path/to/source_artifacts.jsonl \
-  --require-files \
-  --verify-checksums
+- **Plan before execution.** Every page is profiled and assigned an explicit,
+  auditable model plan before expensive work starts.
+- **One normalized model contract.** Layout and OCR backends emit the same
+  region, runtime, and provenance structure.
+- **Configurable routing.** Profiles select model bags; page-complexity filters
+  decide which members run on each page.
+- **Failure isolation.** One failed adapter does not discard outputs from the
+  rest of the page's model bag.
+- **Evidence-preserving fusion.** Fused regions and transcripts retain their
+  source-model identities and disagreement signals.
+- **Measured execution.** Raw timing rows and aggregate reports reconcile
+  planned, observed, successful, failed, missing, and unexpected invocations.
+- **HPC-native validation.** The repository includes a scheduler-backed NYU
+  Torch canary with predictable scratch paths and structured status output.
 
-newsbag bagging-canary \
-  --manifest /path/to/source_artifacts.jsonl \
-  --run-dir /tmp/newsbag_bagging_canary \
-  --profile full
-
-newsbag validate-run \
-  --run-dir /tmp/newsbag_bagging_canary
-```
-
-External model smoke:
-
-```bash
-newsbag bagging-canary \
-  --manifest /path/to/source_artifacts.jsonl \
-  --run-dir /tmp/newsbag_external_smoke \
-  --profile external_smoke \
-  --config configs/bagging.command.example.json
-```
-
-Import legacy model outputs into the new bagging contract:
-
-```bash
-python scripts/legacy_layout_to_model_output.py \
-  --input-json /path/to/legacy-normalized/page-001.json \
-  --page-id page-001 \
-  --model-id legacy_paddle_layout_v1 \
-  --source-family paddle \
-  --output-json /tmp/page-001.model_output.json
-```
-
-Build a full adapter config from an old `newsbag run` directory:
-
-```bash
-newsbag legacy-run-config \
-  --legacy-run-dir /path/to/old/run \
-  --output-config /tmp/legacy-bagging.json \
-  --profile legacy_import
-
-newsbag bagging-canary \
-  --manifest /path/to/source_artifacts.jsonl \
-  --run-dir /tmp/newsbag_legacy_import \
-  --profile legacy_import \
-  --config /tmp/legacy-bagging.json
-```
-
-Torch scheduler smoke:
-
-```bash
-bash scripts/submit_torch_bagging_canary.sh
-bash scripts/submit_torch_bagging_canary.sh \
-  --profile legacy_fixture \
-  --config configs/bagging.legacy.fixture.json
-```
-
-## What The System Produces
-
-- per-model normalized layout outputs
-- fused page layouts with model provenance
-- review boards for quality control
-- region-aligned OCR and ordered page transcripts
-- corpus-level variant and source rankings
-
-## Technical Overview
+## Architecture
 
 ```mermaid
 flowchart LR
-  A["Input page images<br/>PNG / JPG / TIFF"] --> B["Parser bag"]
-
-  subgraph B["Parser bag"]
-    B1["Paddle layout detectors<br/>PP-DocLayoutV2<br/>PP-DocLayoutV3<br/>PP-DocLayout_plus-L"]
-    B2["Paddle doc_parser v1.5<br/>layout stream + semantic blocks"]
-    B3["Dell American Stories<br/>layout parser"]
-    B4["MinerU2.5<br/>layout parser"]
-  end
-
-  B --> C["Normalize all outputs<br/>shared labels + shared box schema"]
-
-  C --> D["Per-page fusion preparation<br/>choose best single Paddle variant<br/>build Paddle union4<br/>derive consensus pseudo-lines<br/>build base recall mask"]
-
-  D --> E["Fusion variants<br/>S1 best Paddle single<br/>S2 Dell only<br/>S3 MinerU only<br/>P1 Paddle union4<br/>P2 union4 + Dell<br/>P3 union4 + MinerU<br/>P4 union4 + Dell + MinerU"]
-
-  E --> F["Denoise + dedupe<br/>drop weak giant strips<br/>require cross-source support for large text blocks<br/>recover uncovered lines with synthetic boxes<br/>assign page reading order"]
-
-  F --> G["Score variants<br/>base recall ratio<br/>line coverage ratio<br/>text area ratio<br/>box count"]
-
-  G --> H["Recommended fused layout"]
-  H --> I["Review boards<br/>source overlays<br/>fused overlay<br/>MinerU delta board"]
-
-  H --> J["ROI-first OCR preparation<br/>keep fused text/title regions<br/>dedupe nested overlaps<br/>select compact OCR boxes"]
-
-  J --> K["PaddleOCR crop OCR<br/>run OCR on fused crops"]
-  K --> L["Remap OCR lines to page coordinates<br/>apply overlap threshold to each target region"]
-  L --> M["Assign lines back to fused boxes<br/>emit ordered page transcript"]
+  A["Parse input manifest"] --> B["Validate artifacts"]
+  B --> C["Profile each page"]
+  C --> D["Write per-page model plan"]
+  D --> E["CPU / GPU model adapters"]
+  E --> F["Normalize model outputs"]
+  F --> G["Fuse regions and reading order"]
+  G --> H["Transcripts and review packets"]
+  H --> I["Validated run bundle"]
+  E --> J["Raw timing and error rows"]
+  J --> K["Performance summary"]
+  K --> I
 ```
 
-## Models Used
+Acquisition and parsing communicate only through the parse-input manifest.
+Downstream systems consume fused-page and transcript artifacts rather than
+private paths or parser-specific output formats.
 
-### Layout models
+## Install
 
-- Paddle layout detectors: `PP-DocLayoutV2`, `PP-DocLayoutV3`, `PP-DocLayout_plus-L`
-- Paddle semantic/layout parser: `doc_parser v1.5`
-- External layout parsers: Dell American Stories layout parser, MinerU2.5
+Python 3.10 or newer is required.
 
-### OCR model
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
+```
 
-- PaddleOCR, invoked through the `ocr` pipeline on cropped fused regions
+Optional model stacks are intentionally separate from the orchestration core:
 
-The OCR stage uses the fused layout as the spatial prior. OCR runs on selected page regions.
+```bash
+python -m pip install -e ".[paddle]"
+python -m pip install -e ".[dell]"
+python -m pip install -e ".[mineru]"
+```
 
-## Shared Box Representation
+## Input Contract
 
-Every model output is rewritten into the same normalized box structure before fusion starts.
+The input is JSON Lines with one stable page ID per image. Relative image paths
+are resolved against the manifest directory.
 
 ```json
 {
-  "source_family": "paddle|dell|mineru",
-  "source_model": "variant_id",
-  "source_label": "raw model label",
-  "norm_label": "text|title|table|image|other",
-  "bbox_xyxy": [x1, y1, x2, y2],
-  "score": 0.0,
-  "reading_order": null,
-  "text": null
+  "page_id": "issue-1958-06-20-p035",
+  "image_path": "/data/pages/issue-1958-06-20-p035.png",
+  "issue_id": "issue-1958-06-20",
+  "page_number": 35,
+  "checksum_sha256": "<64-character digest>",
+  "source": {
+    "source_system": "newspapers_com",
+    "source_id": "source-page-id"
+  }
 }
 ```
 
-That shared structure is the core contract between parser execution, fusion, review, and transcription.
-
-## Fusion Method
-
-Fusion works page by page.
-
-### Step 1: Build source sets
-
-For each page, the system loads:
-
-- each Paddle layout variant
-- Paddle doc_parser v1.5 layout boxes
-- Dell boxes
-- MinerU boxes
-
-The Paddle family is then represented in two ways:
-
-- the best single Paddle variant for the page
-- the union of all four Paddle sources: three layout detectors plus doc_parser v1.5
-
-### Step 2: Build consensus structure
-
-The system derives pseudo-lines from text-like regions across all sources. These pseudo-lines act as a page-level consensus proxy for text coverage.
-
-Pseudo-line construction filters out obvious noise:
-
-- degenerate boxes
-- very large text-like boxes
-- extreme full-width or full-height strips
-- near-duplicate line candidates
-
-The system also builds a base recall mask from plausible text regions. This mask is used to score fused variants against a cleaner proxy than raw source boxes.
-
-### Step 3: Evaluate fusion variants
-
-The system evaluates seven fusion variants:
-
-- `S1_paddle_best_single`
-- `S2_dell_only`
-- `S3_mineru_only`
-- `P1_paddle_union4`
-- `P2_paddle_union4_plus_dell`
-- `P3_paddle_union4_plus_mineru`
-- `P4_paddle_union4_plus_dell_plus_mineru`
-
-Each variant is run through the same deduplication and denoising logic before scoring.
-
-## Overlap Handling And Layout Cleanup
-
-The quality of the final layout comes from the overlap logic and the cleanup rules.
-
-### Cross-source support for large text regions
-
-Large text-like boxes are treated more strictly than ordinary boxes.
-
-The system measures whether a large candidate is supported by multiple source families. Support comes from overlap relationships across Paddle, Dell, and MinerU boxes.
-
-Large weakly supported regions are filtered aggressively because they are the main source of:
-
-- giant page-spanning strips
-- oversized article blocks
-- OCR confusion
-- broken reading order
-
-### Pseudo-line coverage gating
-
-Large text regions must cover consensus pseudo-lines in a meaningful way. The system checks:
-
-- how many pseudo-lines fall inside the candidate
-- how many of those lines are still uncovered by already selected boxes
-
-This keeps boxes that add text coverage and removes boxes that mostly add bulk.
-
-### Synthetic recovery boxes
-
-When a large weakly supported text block still contains useful uncovered line structure, the system can replace that block with smaller synthetic recovery boxes built around the uncovered pseudo-lines.
-
-This is one of the main cleanup mechanisms. It preserves recall while avoiding huge noisy regions that damage OCR and reading order.
-
-### Final fused ordering
-
-After selection, fused boxes are sorted top-to-bottom and left-to-right, then assigned page reading order. That reading order is reused downstream by the transcription stage.
-
-## Variant Scoring
-
-Each fused variant is scored with:
-
-- `base_recall_ratio`
-- `line_coverage_ratio`
-- `text_area_ratio`
-- `box_count`
-
-These metrics balance recall, page coverage, and structural compactness.
-
-The run summary records:
-
-- `best_variant_by_score`
-- `recommended_variant`
-
-The configured preferred variant is used when it is present in the leaderboard. Otherwise the best-scoring variant becomes the recommendation.
-
-## OCR And Transcript Construction
-
-The transcription stage is ROI-first and layout-driven.
-
-### OCR region selection
-
-The stage starts from the recommended fused layout and keeps selected labels, usually:
-
-- `text`
-- `title`
-
-Those fused regions are then deduplicated again for OCR.
-
-The OCR-region selector uses different overlap settings for titles and text:
-
-- titles prefer smaller distinct boxes
-- text prefers larger container boxes
-
-The result is a compact set of OCR regions with less nesting and less duplicate coverage.
-
-### Crop OCR
-
-Each OCR region is cropped from the original page image and sent through PaddleOCR.
-
-This stage applies OCR to cleaner text/title regions already selected by fusion.
-
-### Remapping and overlap filtering
-
-OCR lines returned from each crop are translated back into page coordinates.
-
-Each translated line is checked against the fused target region with a minimum overlap threshold. Low-overlap lines are rejected.
-
-This line-to-region overlap filter is the second major cleanup mechanism after fusion.
-
-### Final transcript assembly
-
-Accepted OCR lines are assigned back to the fused boxes that generated their crops. Box text is assembled from those lines, and the final page transcript follows fused reading order.
-
-This yields transcripts aligned to the cleaned fused layout and fused reading order.
-
-## Review Method
-
-The system produces visual review artifacts directly from the same fused and source layouts used by the pipeline.
-
-Review output includes:
-
-- original page
-- individual Paddle overlays
-- a Paddle-only board
-- Dell overlay
-- MinerU overlay
-- recommended fused overlay
-- a direct `P2` vs `P4` comparison to show MinerU contribution
-
-These review artifacts make the fusion decision auditable at page level.
-
-## Large-Corpus Use
-
-The system is designed for large corpora of page images.
-
-The practical execution pattern is:
-
-- stage inputs into a canonical manifest
-- shard the corpus into balanced manifests
-- run the parser bag on each shard
-- aggregate fusion rankings and transcripts across shards
-- inspect a focused review subset plus targeted failure cases
-
-This execution model keeps model inference, fusion, review, and transcription composable across large collections.
+Validate before scheduling model work:
+
+```bash
+newsbag validate-parse-input-manifest \
+  --manifest /path/to/parse_input.jsonl \
+  --require-files \
+  --require-checksums \
+  --verify-checksums
+```
+
+## Plan A Model Bag
+
+Planning profiles every page and writes `manifests/model_plan.jsonl` without
+executing adapters:
+
+```bash
+newsbag plan-bagging \
+  --manifest /path/to/parse_input.jsonl \
+  --run-dir /tmp/newsbag_plan \
+  --profile adaptive \
+  --config configs/bagging.command.example.json
+```
+
+Each plan row records the page profile, estimated complexity, selected models,
+resource classes, and routing reason. A command adapter can opt into any
+combination of `easy`, `medium`, and `hard` pages:
+
+```json
+{
+  "include_builtin_adapters": false,
+  "command_adapters": [
+    {
+      "model_id": "layout_fast_v1",
+      "family": "layout",
+      "resource_class": "cpu",
+      "profiles": ["adaptive", "full"],
+      "complexities": ["easy", "medium", "hard"],
+      "command": [
+        "{python}",
+        "scripts/my_layout_adapter.py",
+        "--image-path", "{image_path}",
+        "--output-json", "{output_path}"
+      ]
+    },
+    {
+      "model_id": "ocr_expensive_v1",
+      "family": "ocr",
+      "resource_class": "gpu",
+      "profiles": ["adaptive", "full"],
+      "complexities": ["hard"],
+      "command": ["local-ocr-runner", "{image_path}", "{output_path}"]
+    }
+  ]
+}
+```
+
+Model choices remain configuration, not orchestration policy. This allows
+benchmarks to change the model bag without changing page, fusion, transcript,
+or run-bundle contracts.
+
+## Execute And Validate
+
+Run the complete lightweight pipeline locally or register real model commands
+through a config:
+
+```bash
+newsbag bagging-canary \
+  --manifest /path/to/parse_input.jsonl \
+  --run-dir /tmp/newsbag_run \
+  --profile full
+
+newsbag validate-run \
+  --run-dir /tmp/newsbag_run \
+  --output-json /tmp/newsbag_run/reports/validation.json
+```
+
+Rebuild the performance aggregate from immutable raw timing rows:
+
+```bash
+newsbag summarize-performance --run-dir /tmp/newsbag_run
+```
+
+The built-in `baseline`, `adaptive`, and `full` profiles use deterministic CPU
+adapters. They validate orchestration and contracts; they are not presented as
+production OCR quality baselines.
+
+## Run Bundle
+
+```text
+RUN_DIR/
+  summary.json
+  provenance.json
+  errors.jsonl
+  manifests/
+    parse_input.jsonl
+    model_plan.jsonl
+  profiles/
+    <page_id>.json
+  outputs/
+    model_outputs/<model_id>/<page_id>.json
+    fused_pages/<page_id>.json
+    transcripts/<page_id>.txt
+  review/
+    <page_id>.md
+  reports/
+    input_manifest_validation.json
+    plan_summary.json
+    performance.json
+    performance.jsonl
+    performance_summary.json
+    validation.json
+```
+
+`newsbag validate-run` cross-checks the input copy, per-page plan, successful
+model outputs, failed adapters, fused model provenance, transcript bytes,
+region geometry, headline counters, raw timing coverage, aggregate performance,
+and provenance. Artifact references in `summary.json` are relative to the run
+root, so the bundle can be moved as a directory; references that escape that
+root are rejected. A run with execution errors remains inspectable but
+validates as an error.
+
+## Adapter Contract
+
+Command templates can use `{python}`, `{page_id}`, `{image_path}`, `{image_dir}`,
+`{image_name}`, `{image_stem}`, `{manifest_dir}`, `{profile_path}`,
+`{output_path}`, `{run_dir}`, `{repo_root}`, `{model_id}`, `{width}`, and
+`{height}`. The command writes JSON to `{output_path}` or emits one JSON object
+on stdout.
+
+```json
+{
+  "page_id": "issue-1958-06-20-p035",
+  "model_id": "layout_fast_v1",
+  "regions": [
+    {
+      "bbox_xyxy": [20, 30, 220, 90],
+      "label": "text",
+      "confidence": 0.91,
+      "text": "recognized text",
+      "reading_order": 1
+    }
+  ]
+}
+```
+
+Legacy normalized Paddle, Dell, and MinerU outputs can be wrapped without
+rerunning inference. See [Parser bagging](docs/parser_bagging_refactor.md) for
+the converter and legacy-run discovery commands.
+
+## Torch Canary
+
+The submitter syncs the repository to
+`/scratch/$USER/codex_hpc/parser_bagging`, installs the core package in a small
+virtual environment, submits a Slurm job, validates the resulting bundle, and
+prints `slurm_status.json`:
+
+```bash
+bash scripts/submit_torch_bagging_canary.sh
+```
+
+Useful controls:
+
+```bash
+bash scripts/submit_torch_bagging_canary.sh --profile baseline --plan-only
+bash scripts/submit_torch_bagging_canary.sh --profile adaptive --no-wait
+bash scripts/submit_torch_bagging_canary.sh --skip-sync --timeout 1200
+bash scripts/submit_torch_bagging_canary.sh \
+  --profile command_fixture \
+  --config configs/bagging.command.fixture.json
+```
+
+GPU runner and split-stage examples live under `torch/slurm/`. Torch-specific
+environment notes are in [Torch HPC](docs/torch_hpc.md).
+
+## Development
+
+```bash
+python -m compileall -q src
+pytest -q
+python -m build
+```
+
+The active core has no network or hosted-model dependency. Tests use tiny
+generated images and subprocess fixtures, so contract and failure behavior can
+be verified in CI without downloading model weights.

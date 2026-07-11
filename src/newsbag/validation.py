@@ -3,8 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from collections import Counter
 from pathlib import Path
 from typing import Any
+
+from newsbag.contracts import is_safe_artifact_id
 
 
 def _read_json(path: Path, issues: list[dict[str, Any]]) -> Any:
@@ -61,12 +64,34 @@ def _read_jsonl(path: Path, issues: list[dict[str, Any]]) -> list[dict[str, Any]
     return rows
 
 
-def _path_from_summary(run_dir: Path, summary: dict[str, Any], output_key: str, fallback: Path) -> Path:
+def _path_from_summary(
+    run_dir: Path,
+    summary: dict[str, Any],
+    output_key: str,
+    fallback: Path,
+    issues: list[dict[str, Any]],
+) -> Path:
     outputs = summary.get("outputs") if isinstance(summary.get("outputs"), dict) else {}
     raw = outputs.get(output_key)
-    if raw:
-        return Path(str(raw)).expanduser()
-    return fallback
+    if not raw:
+        return fallback.resolve()
+    candidate = Path(str(raw)).expanduser()
+    if not candidate.is_absolute():
+        candidate = run_dir / candidate
+    candidate = candidate.resolve()
+    try:
+        candidate.relative_to(run_dir.resolve())
+    except ValueError:
+        issues.append(
+            {
+                "level": "error",
+                "code": "output_path_outside_run",
+                "path": str(candidate),
+                "message": f"summary output {output_key} escapes the run directory",
+            }
+        )
+        return fallback.resolve()
+    return candidate
 
 
 def _sha256_file(path: Path) -> str:
@@ -132,6 +157,15 @@ def validate_parse_input_manifest(
                 code="missing_page_id",
                 message="manifest row is missing page_id",
                 path=manifest,
+            )
+        elif not is_safe_artifact_id(page_id):
+            _issue(
+                issues,
+                level="error",
+                code="invalid_page_id",
+                message="page_id must be a portable artifact identifier using letters, digits, dot, underscore, or hyphen",
+                path=manifest,
+                page_id=page_id,
             )
         elif page_id in seen_page_ids:
             _issue(
@@ -430,6 +464,41 @@ def _validate_model_output(path: Path, *, page_id: str, model_id: str, issues: l
                 page_id=page_id,
                 model_id=model_id,
             )
+        elif runtime_status not in {"ok", "skipped"}:
+            _issue(
+                issues,
+                level="error",
+                code="invalid_runtime_status",
+                message="successful model output runtime status must be ok or skipped",
+                path=path,
+                page_id=page_id,
+                model_id=model_id,
+            )
+        resource_class = str(runtime.get("resource_class") or "").strip()
+        if not resource_class:
+            _issue(
+                issues,
+                level="error",
+                code="missing_runtime_resource_class",
+                message="model output runtime is missing resource_class",
+                path=path,
+                page_id=page_id,
+                model_id=model_id,
+            )
+        try:
+            runtime_seconds = float(runtime.get("seconds"))
+        except (TypeError, ValueError):
+            runtime_seconds = math.nan
+        if not math.isfinite(runtime_seconds) or runtime_seconds < 0.0:
+            _issue(
+                issues,
+                level="error",
+                code="invalid_runtime_seconds",
+                message="model output runtime seconds must be nonnegative and finite",
+                path=path,
+                page_id=page_id,
+                model_id=model_id,
+            )
 
     regions = payload.get("regions")
     if not isinstance(regions, list):
@@ -478,7 +547,7 @@ def _validate_fused_page(
             issues,
             level="error",
             code="fused_model_ids_mismatch",
-            message="fused model_ids do not match summary model_ids",
+            message="fused model_ids do not match successful models from the page plan",
             path=path,
             page_id=page_id,
         )
@@ -536,6 +605,210 @@ def _validate_fused_page(
     return {"regions": valid_regions, "has_transcript": has_transcript_file}
 
 
+def _validate_model_plan(
+    rows: list[dict[str, Any]],
+    *,
+    page_ids: list[str],
+    summary_model_ids: list[str],
+    profile_name: str,
+    path: Path,
+    issues: list[dict[str, Any]],
+) -> dict[str, list[str]]:
+    plan_by_page: dict[str, list[str]] = {}
+    model_union: list[str] = []
+    known_page_ids = set(page_ids)
+
+    for row in rows:
+        page_id = str(row.get("page_id") or "").strip()
+        if not page_id:
+            _issue(
+                issues,
+                level="error",
+                code="model_plan_missing_page_id",
+                message="model plan row is missing page_id",
+                path=path,
+            )
+            continue
+        if page_id in plan_by_page:
+            _issue(
+                issues,
+                level="error",
+                code="duplicate_model_plan_page",
+                message="model plan contains more than one row for the page",
+                path=path,
+                page_id=page_id,
+            )
+            continue
+        if page_id not in known_page_ids:
+            _issue(
+                issues,
+                level="error",
+                code="unknown_model_plan_page",
+                message="model plan page_id is absent from the parse input manifest",
+                path=path,
+                page_id=page_id,
+            )
+        if row.get("contract") != "parser-model-plan-v1":
+            _issue(
+                issues,
+                level="error",
+                code="invalid_model_plan_contract",
+                message="model plan row must use contract parser-model-plan-v1",
+                path=path,
+                page_id=page_id,
+            )
+        if str(row.get("profile_name") or "") != profile_name:
+            _issue(
+                issues,
+                level="error",
+                code="model_plan_profile_mismatch",
+                message="model plan profile_name does not match summary profile",
+                path=path,
+                page_id=page_id,
+            )
+
+        complexity = str(row.get("estimated_complexity") or "")
+        if complexity not in {"easy", "medium", "hard"}:
+            _issue(
+                issues,
+                level="error",
+                code="invalid_page_complexity",
+                message="estimated_complexity must be easy, medium, or hard",
+                path=path,
+                page_id=page_id,
+            )
+        profile = row.get("profile")
+        if not isinstance(profile, dict):
+            _issue(
+                issues,
+                level="error",
+                code="missing_page_profile",
+                message="model plan row is missing its page profile",
+                path=path,
+                page_id=page_id,
+            )
+        elif (
+            str(profile.get("page_id") or "") != page_id
+            or str(profile.get("estimated_complexity") or "") != complexity
+        ):
+            _issue(
+                issues,
+                level="error",
+                code="model_plan_profile_mismatch",
+                message="embedded page profile does not match the model plan row",
+                path=path,
+                page_id=page_id,
+            )
+
+        models = row.get("models")
+        model_ids: list[str] = []
+        resource_classes: set[str] = set()
+        if not isinstance(models, list) or not models:
+            _issue(
+                issues,
+                level="error",
+                code="empty_model_plan",
+                message="model plan row must contain at least one model",
+                path=path,
+                page_id=page_id,
+            )
+        else:
+            for model in models:
+                if not isinstance(model, dict):
+                    _issue(
+                        issues,
+                        level="error",
+                        code="invalid_planned_model",
+                        message="planned model must be an object",
+                        path=path,
+                        page_id=page_id,
+                    )
+                    continue
+                model_id = str(model.get("model_id") or "").strip()
+                family = str(model.get("family") or "").strip()
+                resource_class = str(model.get("resource_class") or "").strip()
+                if not model_id or not family or not resource_class:
+                    _issue(
+                        issues,
+                        level="error",
+                        code="invalid_planned_model",
+                        message="planned model requires model_id, family, and resource_class",
+                        path=path,
+                        page_id=page_id,
+                        model_id=model_id,
+                    )
+                    continue
+                if not is_safe_artifact_id(model_id):
+                    _issue(
+                        issues,
+                        level="error",
+                        code="invalid_planned_model_id",
+                        message="planned model_id is not a portable artifact identifier",
+                        path=path,
+                        page_id=page_id,
+                        model_id=model_id,
+                    )
+                    continue
+                if model_id in model_ids:
+                    _issue(
+                        issues,
+                        level="error",
+                        code="duplicate_planned_model",
+                        message="model appears more than once in the page plan",
+                        path=path,
+                        page_id=page_id,
+                        model_id=model_id,
+                    )
+                    continue
+                model_ids.append(model_id)
+                resource_classes.add(resource_class)
+                if model_id not in model_union:
+                    model_union.append(model_id)
+
+        declared_resources = row.get("resource_classes")
+        if declared_resources != sorted(resource_classes):
+            _issue(
+                issues,
+                level="error",
+                code="model_plan_resource_mismatch",
+                message="resource_classes do not match the planned models",
+                path=path,
+                page_id=page_id,
+            )
+        if not str(row.get("routing_reason") or "").strip():
+            _issue(
+                issues,
+                level="error",
+                code="missing_routing_reason",
+                message="model plan row is missing routing_reason",
+                path=path,
+                page_id=page_id,
+            )
+        plan_by_page[page_id] = model_ids
+
+    for page_id in page_ids:
+        if page_id not in plan_by_page:
+            _issue(
+                issues,
+                level="error",
+                code="missing_model_plan_page",
+                message="parse input page has no model plan row",
+                path=path,
+                page_id=page_id,
+            )
+            plan_by_page[page_id] = []
+
+    if model_union != summary_model_ids:
+        _issue(
+            issues,
+            level="error",
+            code="summary_model_ids_mismatch",
+            message="summary model_ids do not match the ordered union of the page plans",
+            path=path,
+        )
+    return plan_by_page
+
+
 def validate_bagging_run(run_dir: Path) -> dict[str, Any]:
     root = run_dir.expanduser().resolve()
     issues: list[dict[str, Any]] = []
@@ -550,20 +823,80 @@ def validate_bagging_run(run_dir: Path) -> dict[str, Any]:
             "issues": issues,
         }
 
+    model_plan_path = _path_from_summary(
+        root,
+        summary,
+        "model_plan",
+        root / "manifests" / "model_plan.jsonl",
+        issues,
+    )
+    plan_summary_path = _path_from_summary(
+        root,
+        summary,
+        "plan_summary",
+        root / "reports" / "plan_summary.json",
+        issues,
+    )
+    performance_summary_path = _path_from_summary(
+        root,
+        summary,
+        "performance_summary",
+        root / "reports" / "performance_summary.json",
+        issues,
+    )
     manifest_rows = _read_jsonl(root / "manifests" / "parse_input.jsonl", issues)
+    model_plan_rows = _read_jsonl(model_plan_path, issues)
     errors_rows = _read_jsonl(root / "errors.jsonl", issues)
     performance_rows = _read_jsonl(root / "reports" / "performance.jsonl", issues)
     performance_json = _read_json(root / "reports" / "performance.json", issues)
+    plan_summary_json = _read_json(plan_summary_path, issues)
+    performance_summary_json = _read_json(performance_summary_path, issues)
     provenance_json = _read_json(root / "provenance.json", issues)
     input_manifest_validation = _read_json(root / "reports" / "input_manifest_validation.json", issues)
 
     model_ids = [str(item) for item in summary.get("model_ids", []) if str(item)]
     page_ids = [str(row.get("page_id") or "") for row in manifest_rows if str(row.get("page_id") or "")]
-    page_error_ids = {str(row.get("page_id") or "") for row in errors_rows if str(row.get("page_id") or "")}
+    page_error_ids = {
+        str(row.get("page_id") or "")
+        for row in errors_rows
+        if str(row.get("page_id") or "") and str(row.get("scope") or "page") == "page"
+    }
+    adapter_error_rows = [row for row in errors_rows if str(row.get("scope") or "") == "adapter"]
+    adapter_error_pairs = {
+        (str(row.get("page_id") or ""), str(row.get("model_id") or ""))
+        for row in adapter_error_rows
+        if str(row.get("page_id") or "") and str(row.get("model_id") or "")
+    }
     expected_completed_pages = [page_id for page_id in page_ids if page_id not in page_error_ids]
-    model_outputs_dir = _path_from_summary(root, summary, "model_outputs", root / "outputs" / "model_outputs")
-    fused_pages_dir = _path_from_summary(root, summary, "fused_pages", root / "outputs" / "fused_pages")
-    transcripts_dir = _path_from_summary(root, summary, "transcripts", root / "outputs" / "transcripts")
+    plan_by_page = _validate_model_plan(
+        model_plan_rows,
+        page_ids=page_ids,
+        summary_model_ids=model_ids,
+        profile_name=str(summary.get("profile") or ""),
+        path=model_plan_path,
+        issues=issues,
+    )
+    model_outputs_dir = _path_from_summary(
+        root,
+        summary,
+        "model_outputs",
+        root / "outputs" / "model_outputs",
+        issues,
+    )
+    fused_pages_dir = _path_from_summary(
+        root,
+        summary,
+        "fused_pages",
+        root / "outputs" / "fused_pages",
+        issues,
+    )
+    transcripts_dir = _path_from_summary(
+        root,
+        summary,
+        "transcripts",
+        root / "outputs" / "transcripts",
+        issues,
+    )
 
     if int(summary.get("page_count") or -1) != len(page_ids):
         _issue(
@@ -575,6 +908,10 @@ def validate_bagging_run(run_dir: Path) -> dict[str, Any]:
         )
 
     performance = summary.get("performance") if isinstance(summary.get("performance"), dict) else {}
+    planned_invocations = sum(len(plan_by_page.get(page_id, [])) for page_id in page_ids)
+    adapter_performance_rows = [
+        row for row in performance_rows if str(row.get("stage") or "") == "model_adapter"
+    ]
     if performance.get("pages_attempted") != len(page_ids):
         _issue(
             issues,
@@ -594,6 +931,47 @@ def validate_bagging_run(run_dir: Path) -> dict[str, Any]:
             ),
             path=summary_path,
         )
+    if performance.get("pages_failed") != len(page_error_ids):
+        _issue(
+            issues,
+            level="error",
+            code="pages_failed_mismatch",
+            message=f"performance pages_failed={performance.get('pages_failed')} but errors.jsonl has {len(page_error_ids)} failed pages",
+            path=summary_path,
+        )
+    if performance.get("adapter_invocations_planned") != planned_invocations:
+        _issue(
+            issues,
+            level="error",
+            code="planned_invocations_mismatch",
+            message=(
+                f"performance adapter_invocations_planned={performance.get('adapter_invocations_planned')} "
+                f"but model plan has {planned_invocations}"
+            ),
+            path=summary_path,
+        )
+    if performance.get("adapter_invocations_observed") != len(adapter_performance_rows):
+        _issue(
+            issues,
+            level="error",
+            code="observed_invocations_mismatch",
+            message=(
+                f"performance adapter_invocations_observed={performance.get('adapter_invocations_observed')} "
+                f"but raw performance has {len(adapter_performance_rows)} adapter rows"
+            ),
+            path=summary_path,
+        )
+    if performance.get("adapter_errors") != len(adapter_error_rows):
+        _issue(
+            issues,
+            level="error",
+            code="adapter_error_count_mismatch",
+            message=(
+                f"performance adapter_errors={performance.get('adapter_errors')} "
+                f"but errors.jsonl has {len(adapter_error_rows)} adapter errors"
+            ),
+            path=summary_path,
+        )
     if performance.get("errors") != len(errors_rows):
         _issue(
             issues,
@@ -606,10 +984,79 @@ def validate_bagging_run(run_dir: Path) -> dict[str, Any]:
         _issue(
             issues,
             level="error",
-            code="run_has_page_errors",
-            message=f"run reports {len(errors_rows)} page-level errors",
+            code="run_has_errors",
+            message=f"run reports {len(errors_rows)} execution errors",
             path=root / "errors.jsonl",
         )
+
+    planned_pairs = {
+        (page_id, model_id)
+        for page_id in page_ids
+        for model_id in plan_by_page.get(page_id, [])
+    }
+    observed_pair_counts = Counter(
+        (str(row.get("page_id") or ""), str(row.get("model_id") or ""))
+        for row in adapter_performance_rows
+    )
+    observed_pairs = set(observed_pair_counts)
+    missing_pairs = planned_pairs - observed_pairs
+    unexpected_pairs = observed_pairs - planned_pairs
+    duplicate_pairs = sorted(pair for pair, count in observed_pair_counts.items() if count != 1)
+    if missing_pairs:
+        _issue(
+            issues,
+            level="error",
+            code="missing_adapter_performance_rows",
+            message=f"raw performance is missing {len(missing_pairs)} planned adapter invocations",
+            path=root / "reports" / "performance.jsonl",
+        )
+    if unexpected_pairs:
+        _issue(
+            issues,
+            level="error",
+            code="unexpected_adapter_performance_rows",
+            message=f"raw performance has {len(unexpected_pairs)} unplanned adapter invocations",
+            path=root / "reports" / "performance.jsonl",
+        )
+    if duplicate_pairs:
+        _issue(
+            issues,
+            level="error",
+            code="duplicate_adapter_performance_rows",
+            message=f"raw performance repeats {len(duplicate_pairs)} page/model invocations",
+            path=root / "reports" / "performance.jsonl",
+        )
+    raw_adapter_error_pairs = {
+        (str(row.get("page_id") or ""), str(row.get("model_id") or ""))
+        for row in adapter_performance_rows
+        if str(row.get("status") or "") == "error"
+    }
+    if raw_adapter_error_pairs != adapter_error_pairs:
+        _issue(
+            issues,
+            level="error",
+            code="adapter_error_rows_mismatch",
+            message="adapter failures differ between errors.jsonl and raw performance",
+            path=root / "reports" / "performance.jsonl",
+        )
+    known_page_ids = set(page_ids)
+    for row in performance_rows:
+        stage = str(row.get("stage") or "")
+        page_id = str(row.get("page_id") or "")
+        try:
+            seconds = float(row.get("seconds"))
+        except (TypeError, ValueError):
+            seconds = math.nan
+        if not stage or page_id not in known_page_ids or not math.isfinite(seconds) or seconds < 0.0:
+            _issue(
+                issues,
+                level="error",
+                code="invalid_performance_row",
+                message="performance row requires a known page, stage, and nonnegative finite seconds",
+                path=root / "reports" / "performance.jsonl",
+                page_id=page_id,
+                model_id=str(row.get("model_id") or ""),
+            )
 
     if not isinstance(performance_json, dict):
         _issue(
@@ -619,12 +1066,105 @@ def validate_bagging_run(run_dir: Path) -> dict[str, Any]:
             message="reports/performance.json must be an object",
             path=root / "reports" / "performance.json",
         )
+    elif performance_json != performance:
+        _issue(
+            issues,
+            level="error",
+            code="performance_report_mismatch",
+            message="reports/performance.json does not match summary performance",
+            path=root / "reports" / "performance.json",
+        )
+    if not isinstance(plan_summary_json, dict):
+        _issue(
+            issues,
+            level="error",
+            code="invalid_plan_summary",
+            message="reports/plan_summary.json must be an object",
+            path=plan_summary_path,
+        )
+    else:
+        if plan_summary_json.get("contract") != "parser-model-plan-summary-v1":
+            _issue(
+                issues,
+                level="error",
+                code="invalid_plan_summary_contract",
+                message="plan summary must use contract parser-model-plan-summary-v1",
+                path=plan_summary_path,
+            )
+        expected_plan_fields = {
+            "profile_name": str(summary.get("profile") or ""),
+            "pages_planned": len(page_ids),
+            "adapter_invocations_planned": planned_invocations,
+            "model_ids": model_ids,
+        }
+        for key, expected in expected_plan_fields.items():
+            if plan_summary_json.get(key) != expected:
+                _issue(
+                    issues,
+                    level="error",
+                    code="plan_summary_mismatch",
+                    message=f"plan summary {key} does not match the run bundle",
+                    path=plan_summary_path,
+                )
+    if not isinstance(performance_summary_json, dict):
+        _issue(
+            issues,
+            level="error",
+            code="invalid_performance_summary",
+            message="reports/performance_summary.json must be an object",
+            path=performance_summary_path,
+        )
+    else:
+        if performance_summary_json.get("contract") != "parser-performance-summary-v1":
+            _issue(
+                issues,
+                level="error",
+                code="invalid_performance_summary_contract",
+                message="performance summary must use contract parser-performance-summary-v1",
+                path=performance_summary_path,
+            )
+        if performance_summary_json.get("raw_rows") != len(performance_rows):
+            _issue(
+                issues,
+                level="error",
+                code="performance_summary_row_mismatch",
+                message="performance summary raw_rows does not match performance.jsonl",
+                path=performance_summary_path,
+            )
+        coverage = (
+            performance_summary_json.get("coverage")
+            if isinstance(performance_summary_json.get("coverage"), dict)
+            else {}
+        )
+        expected_coverage = {
+            "planned_invocations": planned_invocations,
+            "observed_invocations": len(observed_pairs),
+            "missing_invocations": len(missing_pairs),
+            "unexpected_invocations": len(unexpected_pairs),
+        }
+        for key, expected in expected_coverage.items():
+            if coverage.get(key) != expected:
+                _issue(
+                    issues,
+                    level="error",
+                    code="performance_coverage_mismatch",
+                    message=f"performance summary coverage {key} does not match raw artifacts",
+                    path=performance_summary_path,
+                )
     if not isinstance(provenance_json, dict):
         _issue(
             issues,
             level="error",
             code="invalid_provenance",
             message="provenance.json must be an object",
+            path=root / "provenance.json",
+        )
+    elif provenance_json != summary.get("provenance"):
+        _issue(
+            issues,
+            level="error",
+            code="provenance_mismatch",
+            message="provenance.json does not match summary provenance",
             path=root / "provenance.json",
         )
     if not isinstance(input_manifest_validation, dict):
@@ -650,6 +1190,38 @@ def validate_bagging_run(run_dir: Path) -> dict[str, Any]:
     model_region_count = 0
     fused_region_count = 0
     runtime_status_counts: dict[str, int] = {}
+    expected_model_outputs = 0
+
+    successful_models_by_page: dict[str, list[str]] = {}
+    for page_id in page_ids:
+        successful_model_ids = [
+            model_id
+            for model_id in plan_by_page.get(page_id, [])
+            if (page_id, model_id) not in adapter_error_pairs
+        ]
+        successful_models_by_page[page_id] = successful_model_ids
+        expected_model_outputs += len(successful_model_ids)
+        for model_id in plan_by_page.get(page_id, []):
+            model_path = model_outputs_dir / model_id / f"{page_id}.json"
+            if (page_id, model_id) in adapter_error_pairs:
+                if model_path.exists():
+                    model_output_count += 1
+                    _issue(
+                        issues,
+                        level="error",
+                        code="failed_adapter_has_model_output",
+                        message="failed adapter left a model output artifact",
+                        path=model_path,
+                        page_id=page_id,
+                        model_id=model_id,
+                    )
+                continue
+            model_stats = _validate_model_output(model_path, page_id=page_id, model_id=model_id, issues=issues)
+            if model_path.exists():
+                model_output_count += 1
+            model_region_count += int(model_stats["regions"])
+            runtime_status = str(model_stats["status"] or "unknown")
+            runtime_status_counts[runtime_status] = runtime_status_counts.get(runtime_status, 0) + 1
 
     for page_id in expected_completed_pages:
         fused_path = fused_pages_dir / f"{page_id}.json"
@@ -658,7 +1230,7 @@ def validate_bagging_run(run_dir: Path) -> dict[str, Any]:
             fused_path,
             transcript_path=transcript_path,
             page_id=page_id,
-            model_ids=model_ids,
+            model_ids=successful_models_by_page.get(page_id, []),
             issues=issues,
         )
         if fused_path.exists():
@@ -666,15 +1238,6 @@ def validate_bagging_run(run_dir: Path) -> dict[str, Any]:
         if fused_stats["has_transcript"]:
             transcript_count += 1
         fused_region_count += int(fused_stats["regions"])
-
-        for model_id in model_ids:
-            model_path = model_outputs_dir / model_id / f"{page_id}.json"
-            model_stats = _validate_model_output(model_path, page_id=page_id, model_id=model_id, issues=issues)
-            if model_path.exists():
-                model_output_count += 1
-            model_region_count += int(model_stats["regions"])
-            status = str(model_stats["status"] or "unknown")
-            runtime_status_counts[status] = runtime_status_counts.get(status, 0) + 1
 
     if fused_count != len(expected_completed_pages):
         _issue(
@@ -692,7 +1255,6 @@ def validate_bagging_run(run_dir: Path) -> dict[str, Any]:
             message=f"found {transcript_count} transcript files for {len(expected_completed_pages)} completed pages",
             path=transcripts_dir,
         )
-    expected_model_outputs = len(expected_completed_pages) * len(model_ids)
     if model_output_count != expected_model_outputs:
         _issue(
             issues,
@@ -712,6 +1274,9 @@ def validate_bagging_run(run_dir: Path) -> dict[str, Any]:
         "counts": {
             "pages_manifest": len(page_ids),
             "pages_completed": len(expected_completed_pages),
+            "pages_failed": len(page_error_ids),
+            "model_plan_rows": len(model_plan_rows),
+            "adapter_invocations_planned": planned_invocations,
             "models": len(model_ids),
             "model_outputs": model_output_count,
             "model_regions": model_region_count,
@@ -719,7 +1284,9 @@ def validate_bagging_run(run_dir: Path) -> dict[str, Any]:
             "fused_regions": fused_region_count,
             "transcripts": transcript_count,
             "performance_rows": len(performance_rows),
-            "page_errors": len(errors_rows),
+            "page_errors": len(page_error_ids),
+            "adapter_errors": len(adapter_error_rows),
+            "execution_errors": len(errors_rows),
             "errors": error_count,
             "warnings": warning_count,
         },
@@ -730,6 +1297,9 @@ def validate_bagging_run(run_dir: Path) -> dict[str, Any]:
             "transcripts": str(transcripts_dir),
             "performance_json": str(root / "reports" / "performance.json"),
             "performance_jsonl": str(root / "reports" / "performance.jsonl"),
+            "performance_summary_json": str(performance_summary_path),
+            "model_plan_jsonl": str(model_plan_path),
+            "plan_summary_json": str(plan_summary_path),
             "errors_jsonl": str(root / "errors.jsonl"),
             "provenance_json": str(root / "provenance.json"),
             "input_manifest_validation_json": str(root / "reports" / "input_manifest_validation.json"),
@@ -753,6 +1323,9 @@ def format_validation_text(report: dict[str, Any]) -> str:
         "source_systems",
         "pages_manifest",
         "pages_completed",
+        "pages_failed",
+        "model_plan_rows",
+        "adapter_invocations_planned",
         "models",
         "model_outputs",
         "model_regions",
@@ -761,6 +1334,8 @@ def format_validation_text(report: dict[str, Any]) -> str:
         "transcripts",
         "performance_rows",
         "page_errors",
+        "adapter_errors",
+        "execution_errors",
         "errors",
         "warnings",
     )

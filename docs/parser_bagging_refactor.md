@@ -1,7 +1,7 @@
 # Parser Bagging Refactor
 
-This branch makes `newspaper-parsing` the manifest-driven model-bagging engine
-for the newspaper stack.
+`newspaper-parsing` is the manifest-driven model-bagging engine for the
+newspaper stack.
 
 The new forward-looking contract is:
 
@@ -15,6 +15,25 @@ The new forward-looking contract is:
 The initial `newsbag bagging-canary` command is intentionally lightweight. It
 uses deterministic CPU adapters so local tests and Torch Slurm canaries validate
 the infrastructure without requiring a full OCR/VLM production run.
+
+## Planning And Adaptive Routing
+
+Model execution starts with a deterministic planning pass:
+
+```bash
+newsbag plan-bagging \
+  --manifest /path/to/source_artifacts.jsonl \
+  --run-dir /tmp/newsbag_plan \
+  --profile adaptive \
+  --config configs/bagging.command.example.json
+```
+
+Planning writes the copied input manifest, one page profile per page,
+`manifests/model_plan.jsonl`, and `reports/plan_summary.json`. It does not run
+model adapters. Each command adapter may declare `complexities` containing any
+of `easy`, `medium`, and `hard`; omitted complexity routing means all three.
+The plan therefore states what should execute before CPU/GPU allocation or
+model startup.
 
 ## Command Adapters
 
@@ -132,13 +151,33 @@ newsbag validate-run \
   --output-json /tmp/newsbag_bagging_canary/reports/validation.json
 ```
 
-The validator checks the copied parse manifest,
-`reports/input_manifest_validation.json`, `summary.json`,
-`provenance.json`, performance reports, `errors.jsonl`, every expected model
-output, fused page JSON, transcript file, region bounding boxes, model IDs, and
-page counts. The Torch Slurm canary writes this validation report into
+The validator checks the copied parse manifest, page-level model plan,
+`reports/input_manifest_validation.json`, `summary.json`, `provenance.json`,
+raw and aggregate performance reports, `errors.jsonl`, every successful model
+output, fused page JSON, transcript file, region bounding boxes, per-page model
+IDs, plan coverage, and headline counts. The Torch Slurm canary writes this validation report into
 `reports/validation.json` and includes the validation status in
 `slurm_status.json`.
+
+One failed adapter is recorded with `scope=adapter` and does not invalidate
+successful model outputs for that page. The page can still be fused from the
+remaining outputs, while the overall run remains visibly errored. A page-level
+failure uses `scope=page` and is excluded from completed-page counts.
+
+## Performance Reports
+
+Every run writes raw orchestration timings to `reports/performance.jsonl` and
+an aggregate `reports/performance_summary.json`. Aggregates include stage,
+model, resource-class, and page-complexity distributions; p50/p95/max latency;
+serialized throughput; slowest rows; and planned-versus-observed invocation
+coverage.
+
+```bash
+newsbag summarize-performance --run-dir /tmp/newsbag_bagging_canary
+```
+
+The command rebuilds the aggregate from the raw rows, which makes performance
+reporting reproducible and independently testable.
 
 ## Torch Canary
 
@@ -150,7 +189,8 @@ bash scripts/submit_torch_bagging_canary.sh
 
 The submitter syncs this repo to `/scratch/$USER/codex_hpc/parser_bagging`,
 creates or reuses a lightweight `newsbag` virtualenv, generates a tiny fixture
-manifest when needed, submits `torch/slurm/newsbag_bagging_canary_cs.sbatch`,
+manifest when needed, submits
+`torch/slurm/newsbag_bagging_canary_cpu_short.sbatch`,
 waits for completion by default, and prints `slurm_status.json`.
 
 Useful variants:
